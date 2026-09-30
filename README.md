@@ -10,9 +10,19 @@ Built to mimic **TypeSafeAI Jev**, `el-jev` runs on an enterprise-compliant **Az
 
 Interactive schematics generated using the **Archify** visual engine:
 
-1. **System Topology & Cloud Integration:** [`docs/architecture.html`](docs/architecture.html)
-2. **Decisioning & Dual-Gate Inner Wiring:** [`docs/decisioning-flow.html`](docs/decisioning-flow.html)
-3. **Full Architectural Deep Dive:** [`docs/architecture.md`](docs/architecture.md)
+- 🌐 [Interactive System Topology Schematic (`docs/architecture.html`)](docs/architecture.html)
+- 🌐 [Interactive Decisioning Flow & Dual Gate (`docs/decisioning-flow.html`)](docs/decisioning-flow.html)
+- 📖 [Full Architectural Deep Dive (`docs/architecture.md`)](docs/architecture.md)
+
+### System Setup & Azure Foundry Integration
+<p align="center">
+  <img src="docs/architecture-schematic.png" alt="el-jev Architecture & Azure Foundry Integration" width="100%">
+</p>
+
+### Decisioning Flow & Dual Gate Inner Wiring
+<p align="center">
+  <img src="docs/decisioning-flow.png" alt="el-jev Decisioning & Dual-Gate Inner Wiring" width="100%">
+</p>
 
 ```text
 +-----------------------------------------------------------------------------------+
