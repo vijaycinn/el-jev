@@ -1,0 +1,540 @@
+{
+  "schema": "eljev.eval.functional/1",
+  "run_at": "2026-09-30T20:50:53+00:00",
+  "health": {
+    "status": "ok",
+    "version": "0.2.0",
+    "engines": {
+      "cohere": "ready",
+      "systemone": "cohere"
+    },
+    "auth": "azcli",
+    "warm": true,
+    "coverage_policy": "always_abstain_v0",
+    "calibration_version": "none"
+  },
+  "live_unit_tests": {
+    "passed": true,
+    "summary": "Ran 3 tests in 5.057s  OK"
+  },
+  "intent_routing": {
+    "accuracy": 0.9666666666666667,
+    "correct": "29/30",
+    "per_intent": {
+      "code_modification": "5/6",
+      "review_audit": "6/6",
+      "investigation_search": "6/6",
+      "execution_testing": "6/6",
+      "advisory_explanation": "6/6"
+    },
+    "errors": 0,
+    "exit0_under_current_policy": 0,
+    "mean_p_top_correct": 0.703,
+    "mean_p_top_wrong": 0.397,
+    "misroutes": [
+      {
+        "prompt": "Implement caching for the token minting call in the client",
+        "label": "code_modification",
+        "choice": "advisory_explanation",
+        "p_top": 0.3971486792135874,
+        "margin": 0.15596892648644017
+      }
+    ],
+    "risk_coverage_display_softmax": [
+      {
+        "threshold": 0.0,
+        "margin_threshold": 0.0,
+        "coverage": "30/30",
+        "selective_accuracy": 0.967
+      },
+      {
+        "threshold": 0.8,
+        "margin_threshold": 0.5,
+        "coverage": "13/30",
+        "selective_accuracy": 1.0
+      },
+      {
+        "threshold": 0.9,
+        "margin_threshold": 0.7,
+        "coverage": "8/30",
+        "selective_accuracy": 1.0
+      },
+      {
+        "threshold": 0.95,
+        "margin_threshold": 0.85,
+        "coverage": "6/30",
+        "selective_accuracy": 1.0
+      },
+      {
+        "threshold": 0.99,
+        "margin_threshold": 0.95,
+        "coverage": "4/30",
+        "selective_accuracy": 1.0
+      }
+    ],
+    "rows": [
+      {
+        "label": "code_modification",
+        "prompt": "Refactor the retry loop in cohere.py to use exponential backoff",
+        "choice": "code_modification",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.7456225214977744,
+        "margin": 0.6539088489692104,
+        "correct": true,
+        "ms": 672.1
+      },
+      {
+        "label": "code_modification",
+        "prompt": "Add a --json flag to the status command and update the parser",
+        "choice": "code_modification",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.49735912208057037,
+        "margin": 0.31428931404076954,
+        "correct": true,
+        "ms": 171.9
+      },
+      {
+        "label": "code_modification",
+        "prompt": "Fix the off-by-one bug in the pagination helper",
+        "choice": "code_modification",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.3991108194704406,
+        "margin": 0.07941527436481455,
+        "correct": true,
+        "ms": 278.8
+      },
+      {
+        "label": "code_modification",
+        "prompt": "Write a new function that validates the calibration file schema",
+        "choice": "code_modification",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.3632507181168249,
+        "margin": 0.1725012886099998,
+        "correct": true,
+        "ms": 155.4
+      },
+      {
+        "label": "code_modification",
+        "prompt": "Rename the variable userId to userID across the users module",
+        "choice": "code_modification",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.6006533882105182,
+        "margin": 0.3528437550800345,
+        "correct": true,
+        "ms": 173.5
+      },
+      {
+        "label": "code_modification",
+        "prompt": "Implement caching for the token minting call in the client",
+        "choice": "advisory_explanation",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.3971486792135874,
+        "margin": 0.15596892648644017,
+        "correct": false,
+        "ms": 149.6
+      },
+      {
+        "label": "review_audit",
+        "prompt": "Review this pull request for security vulnerabilities before I merge",
+        "choice": "review_audit",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.9955032315496117,
+        "margin": 0.9926111874018543,
+        "correct": true,
+        "ms": 263.9
+      },
+      {
+        "label": "review_audit",
+        "prompt": "Do a code review of the daemon changes and flag any bugs",
+        "choice": "review_audit",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.9623795906086539,
+        "margin": 0.9478455350090877,
+        "correct": true,
+        "ms": 160.3
+      },
+      {
+        "label": "review_audit",
+        "prompt": "Audit the auth flow for credential leakage risks",
+        "choice": "review_audit",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.5585505969129857,
+        "margin": 0.25324970880662534,
+        "correct": true,
+        "ms": 160.3
+      },
+      {
+        "label": "review_audit",
+        "prompt": "Critique my PR diff for correctness issues",
+        "choice": "review_audit",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.9986573583429439,
+        "margin": 0.9980468466697026,
+        "correct": true,
+        "ms": 281.5
+      },
+      {
+        "label": "review_audit",
+        "prompt": "Perform a security audit of the MCP server input handling",
+        "choice": "review_audit",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.5530128211204907,
+        "margin": 0.2282084110755479,
+        "correct": true,
+        "ms": 159.8
+      },
+      {
+        "label": "review_audit",
+        "prompt": "Give me an adversarial review of the verdict gate logic",
+        "choice": "review_audit",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.5251072841189892,
+        "margin": 0.1939052406396205,
+        "correct": true,
+        "ms": 154.4
+      },
+      {
+        "label": "investigation_search",
+        "prompt": "Find where the pidfile is written in the codebase",
+        "choice": "investigation_search",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.9978257155392558,
+        "margin": 0.997046622785648,
+        "correct": true,
+        "ms": 284.5
+      },
+      {
+        "label": "investigation_search",
+        "prompt": "Search the repo for all callers of apply_gate",
+        "choice": "investigation_search",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.4403422179046866,
+        "margin": 0.18962838203959886,
+        "correct": true,
+        "ms": 154.7
+      },
+      {
+        "label": "investigation_search",
+        "prompt": "Which files reference the ELJEV_COHERE_ENDPOINT variable",
+        "choice": "investigation_search",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.5569714161717061,
+        "margin": 0.2187347923098954,
+        "correct": true,
+        "ms": 176.5
+      },
+      {
+        "label": "investigation_search",
+        "prompt": "Look through the daemon logs for the last timeout error",
+        "choice": "investigation_search",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.4725124135296011,
+        "margin": 0.16150815080072595,
+        "correct": true,
+        "ms": 149.1
+      },
+      {
+        "label": "investigation_search",
+        "prompt": "Locate the definition of the INTENT_CRITERIA dictionary",
+        "choice": "investigation_search",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.35546423288486145,
+        "margin": 0.13410049231833684,
+        "correct": true,
+        "ms": 149.2
+      },
+      {
+        "label": "investigation_search",
+        "prompt": "Explore how the hook discovers the daemon port",
+        "choice": "investigation_search",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.44615782500842865,
+        "margin": 0.1347371169188062,
+        "correct": true,
+        "ms": 148.3
+      },
+      {
+        "label": "execution_testing",
+        "prompt": "Run the unit test suite and tell me what fails",
+        "choice": "execution_testing",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.9806442369896095,
+        "margin": 0.9731297080363864,
+        "correct": true,
+        "ms": 178.0
+      },
+      {
+        "label": "execution_testing",
+        "prompt": "Build the package and install it into the venv",
+        "choice": "execution_testing",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.8723855311864753,
+        "margin": 0.8310972360474305,
+        "correct": true,
+        "ms": 148.9
+      },
+      {
+        "label": "execution_testing",
+        "prompt": "Execute the live Foundry tests with ELJEV_LIVE_TESTS set",
+        "choice": "execution_testing",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.8471686856138171,
+        "margin": 0.8054956691817955,
+        "correct": true,
+        "ms": 253.2
+      },
+      {
+        "label": "execution_testing",
+        "prompt": "Deploy the container app to the staging environment",
+        "choice": "execution_testing",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.9078314860644818,
+        "margin": 0.8663355136056213,
+        "correct": true,
+        "ms": 167.4
+      },
+      {
+        "label": "execution_testing",
+        "prompt": "Start the daemon and run the latency benchmark script",
+        "choice": "execution_testing",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.8281680583268385,
+        "margin": 0.7681093892279732,
+        "correct": true,
+        "ms": 145.6
+      },
+      {
+        "label": "execution_testing",
+        "prompt": "Run npm install and then the lint command",
+        "choice": "execution_testing",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.9458211005235257,
+        "margin": 0.9191694031560558,
+        "correct": true,
+        "ms": 274.8
+      },
+      {
+        "label": "advisory_explanation",
+        "prompt": "Explain how softmax temperature affects the confidence scores",
+        "choice": "advisory_explanation",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.8429770026241532,
+        "margin": 0.7682966920624094,
+        "correct": true,
+        "ms": 661.8
+      },
+      {
+        "label": "advisory_explanation",
+        "prompt": "What is the difference between a reranker and a classifier",
+        "choice": "advisory_explanation",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.7300853177030656,
+        "margin": 0.6091721578369627,
+        "correct": true,
+        "ms": 258.9
+      },
+      {
+        "label": "advisory_explanation",
+        "prompt": "Should we use a cross-encoder or a bi-encoder for routing",
+        "choice": "advisory_explanation",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.8861679381904886,
+        "margin": 0.8243196464456327,
+        "correct": true,
+        "ms": 249.7
+      },
+      {
+        "label": "advisory_explanation",
+        "prompt": "Describe the tradeoffs of fail-open versus fail-closed hooks",
+        "choice": "advisory_explanation",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.42485411055769756,
+        "margin": 0.07511018665135855,
+        "correct": true,
+        "ms": 266.0
+      },
+      {
+        "label": "advisory_explanation",
+        "prompt": "Why does Jev use calibrated probabilities instead of LLM reasoning",
+        "choice": "advisory_explanation",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.652881371762201,
+        "margin": 0.5042752323795805,
+        "correct": true,
+        "ms": 153.0
+      },
+      {
+        "label": "advisory_explanation",
+        "prompt": "Give me high-level architecture advice for a low latency decision sidecar",
+        "choice": "advisory_explanation",
+        "status": "needs_review",
+        "exit_code": 2,
+        "p_top": 0.9995708160784849,
+        "margin": 0.9993739999604364,
+        "correct": true,
+        "ms": 153.8
+      }
+    ]
+  },
+  "latency_ms": {
+    "choice_5way": {
+      "n": 30,
+      "p50": 169.7,
+      "p95": 492.0,
+      "max": 672.1,
+      "over_500ms": 2
+    },
+    "noul": {
+      "n": 20,
+      "p50": 172.0,
+      "p95": 276.6,
+      "max": 276.9,
+      "over_500ms": 0,
+      "correct": "20/20"
+    },
+    "screen_50": {
+      "n": 20,
+      "p50": 183.9,
+      "p95": 314.3,
+      "max": 400.2,
+      "over_500ms": 0,
+      "correct": "20/20"
+    }
+  },
+  "gate": {
+    "calibrated_clear": {
+      "choice": "execution_testing",
+      "status": "selected",
+      "exit_code": 0,
+      "calibrated_probability": 0.9806442369896095,
+      "margin_calibrated": 0.9731297080363864,
+      "calibration_version": "functional-eval-illustrative-choice",
+      "notes": []
+    },
+    "calibrated_ambiguous": {
+      "choice": "investigation_search",
+      "status": "needs_review",
+      "exit_code": 2,
+      "calibrated_probability": 0.3138735579053897,
+      "margin_calibrated": 0.11409478417600263,
+      "calibration_version": "functional-eval-illustrative-choice",
+      "notes": [
+        "calibrated probability below threshold",
+        "calibrated margin below margin_threshold"
+      ]
+    },
+    "calibrated_missing_kind": {
+      "choice": "true",
+      "status": "needs_review",
+      "exit_code": 2,
+      "calibration_version": "none",
+      "notes": [
+        "no valid calibration for kind 'noul'"
+      ]
+    },
+    "engine_error": {
+      "choice": null,
+      "status": "engine_error",
+      "exit_code": 2,
+      "error_kind": "timeout",
+      "probabilities": null,
+      "ms": 505.7
+    },
+    "checks": {
+      "clear prompt -> selected, exit 0": true,
+      "ambiguous prompt -> exit 2": true,
+      "uncalibrated kind -> fail closed": true,
+      "engine error -> null choice, non-zero exit": true
+    }
+  },
+  "hook_e2e": {
+    "runs": [
+      {
+        "prompt": "Search the repo for all callers of apply_gate",
+        "expect_advisory": true,
+        "injected": true,
+        "as_expected": true,
+        "wall_ms": 803.8
+      },
+      {
+        "prompt": "Run the unit test suite and tell me what fails",
+        "expect_advisory": true,
+        "injected": true,
+        "as_expected": true,
+        "wall_ms": 690.5
+      },
+      {
+        "prompt": "hi there",
+        "expect_advisory": false,
+        "injected": false,
+        "as_expected": true,
+        "wall_ms": 424.7
+      },
+      {
+        "prompt": "Explain how softmax temperature affects the confidence scores",
+        "expect_advisory": true,
+        "injected": true,
+        "as_expected": true,
+        "wall_ms": 578.0
+      },
+      {
+        "prompt": "Review this pull request for security vulnerabilities before I merge",
+        "expect_advisory": true,
+        "injected": true,
+        "as_expected": true,
+        "wall_ms": 722.1
+      }
+    ],
+    "all_as_expected": true,
+    "wall_ms": {
+      "n": 5,
+      "p50": 690.5,
+      "p95": 787.5,
+      "max": 803.8,
+      "over_500ms": 4
+    }
+  },
+  "checks": {
+    "live Foundry unit tests pass": true,
+    "intent accuracy >= 90%": true,
+    "no engine errors during routing": true,
+    "default policy never exits 0": true,
+    "noul picks true every time": true,
+    "screen ranks the outage first every time": true,
+    "clear prompt -> selected, exit 0": true,
+    "ambiguous prompt -> exit 2": true,
+    "uncalibrated kind -> fail closed": true,
+    "engine error -> null choice, non-zero exit": true,
+    "hook injects advisories and skips short prompts": true
+  },
+  "passed": true
+}

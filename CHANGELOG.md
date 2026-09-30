@@ -5,6 +5,8 @@
 ### Added
 
 - Added `eval/scripts/functional_eval.py`, a live smoke/regression eval: 30-prompt intent routing, noul and 50-candidate screen accuracy, latency percentiles, calibrated/fail-closed gate checks, and hook end-to-end. Exits 0 only when every check passes; the JSON report goes to the git-ignored `eval/reports/`.
+- Added `eval/scripts/llm_vs_eljev.py`, which times the same intent decision on el-jev and on Copilot CLI sub-agent LLMs, in a `lean` (tools stripped) or `full` (real workspace context) arm.
+- Published the 2026-09-30 functional and LLM-vs-el-jev results in `eval/results/2026-09-30/`, and summarised el-jev vs LLM decision speed in the README.
 
 ### Fixed
 

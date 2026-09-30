@@ -69,6 +69,26 @@ The JSON report goes to `eval/reports/` (git-ignored). Options: `--iterations`,
 The prompts are synthetic and author-labelled, so the accuracy is a regression signal, not a
 risk claim. Use the sequence below for held-out selective-risk numbers.
 
+## LLM vs el-jev speed benchmark
+
+`eval/scripts/llm_vs_eljev.py` asks Copilot CLI sub-agent LLMs the same five-way intent
+question and compares their decision time and accuracy with el-jev's:
+
+```powershell
+python eval\scripts\llm_vs_eljev.py --arm lean
+python eval\scripts\llm_vs_eljev.py --arm full --cwd <your-workspace> --per-intent 2 --workers 2
+```
+
+- `lean` disables MCP servers, built-in MCPs and custom instructions: the LLM best case.
+  MCP servers come from `~/.copilot/mcp-config.json`; add plugin servers with `--disable-mcp`.
+- `full` runs in `--cwd` with its whole Copilot context loaded, as a real session would.
+- Baselines default to the `general-purpose` and `task` sub-agent models in
+  `~/.copilot/settings.json`; override with `--baseline AGENT=MODEL@EFFORT`.
+- LLM time is the summed `dispatchDurationMs` (CLI start-up excluded). Every call is a billed
+  Copilot request.
+
+Published results: [results/2026-09-30](results/2026-09-30/README.md).
+
 ## End-to-end command sequence
 
 Run from the repository root with Python 3.13. The shipped tooling uses only the

@@ -45,6 +45,32 @@ These are single-machine measurements from 2026-09-24 and 2026-09-30, not cross-
 
 The hook runs as a new process on every Copilot turn, so process start-up, not the decision, is most of its cost. On this machine the hook adds roughly 1.5 s per turn. Use `hook_mode=marker` (only explicit requests) or `EL_JEV=OFF` when that per-turn cost is not worth the advisory, and raise `ELJEV_HOOK_TIMEOUT_MS` if you prefer fewer fail-opens over lower worst-case latency.
 
+## el-jev vs LLM decision speed
+
+Same five-way intent decision, measured 2026-09-30. The LLM baselines are Copilot CLI
+sub-agents run with their full workspace context (MCP servers, skills, instructions) loaded, as
+a real session would. Accuracy is from the 30-prompt run; latency is from the 10-prompt
+full-context run.
+
+| System | Accuracy (30) | Median | p95 |
+|---|---|---:|---:|
+| **el-jev** (warm daemon, Cohere rerank) | 29/30 | **183 ms** | **351 ms** |
+| task sub-agent (`gpt-5.6-luna`, max) | 30/30 | 3.84 s | 5.76 s |
+| general-purpose sub-agent (`gemini-3.8-flash`, high) | 30/30 | 5.12 s | 10.48 s |
+
+- **~21-28× faster** on the decision itself, and the tail is bounded: el-jev's worst case was
+  0.39 s against 12-24 s for the LLMs.
+- **Tool context is a real tax on LLM routing.** Loading the full workspace context added a
+  median 1.2-1.9 s per decision versus the same models with tools and instructions stripped.
+- **The LLMs were slightly more accurate.** el-jev's one miss had low confidence (p = 0.39),
+  which a fitted calibration gate would abstain on.
+- **The speed-up is realised only where el-jev replaces an LLM decision** (routing, gating,
+  sub-agent or tool choice). As today's pre-turn advisory hook, the LLM still runs and the hook's
+  ~1.5 s per-turn cost (mostly PowerShell and Python start-up) cuts the end-to-end advantage to ~3×.
+
+Full method, lean vs full arms and caveats: [eval/results/2026-09-30](eval/results/2026-09-30/README.md).
+Re-run with `python eval/scripts/llm_vs_eljev.py`.
+
 ## Azure prerequisites
 
 1. Create or use an Azure AI Foundry / AI Services resource.
