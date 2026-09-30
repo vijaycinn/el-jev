@@ -388,6 +388,15 @@ class EljevClient:
             return {"status": "down", "error_kind": "malformed", "notes": ["health response was not an object"]}
         return body
 
+    def log(self, limit: int = 10) -> dict[str, object]:
+        try:
+            status, body = self._call("GET", f"/v1/log?limit={limit}")
+            if isinstance(body, dict):
+                return body
+            return {"records": []}
+        except Exception as exc:
+            return {"error": str(exc), "records": []}
+
 
 Client = EljevClient
 

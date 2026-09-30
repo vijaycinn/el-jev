@@ -408,11 +408,26 @@ def _toggle_status() -> int:
     return 0
 
 
+def _show_log(args: list[str]) -> int:
+    limit = 10
+    if args:
+        if args[0].isdigit():
+            limit = int(args[0])
+        elif "--limit" in args:
+            idx = args.index("--limit")
+            if idx + 1 < len(args):
+                limit = int(args[idx + 1])
+    result = EljevClient().log(limit)
+    _emit(result)
+    return 0
+
+
 def _help() -> int:
     sys.stdout.write(
         "eljev on|enable                 (enable automatic routing and start daemon)\n"
         "eljev off|disable               (disable automatic routing and stop daemon)\n"
         "eljev status                    (show hook and daemon status)\n"
+        "eljev log [--limit N]           (show last N decisions)\n"
         "eljev screen --criterion \"...\" --candidates candidates.json [--top-n K] [--json]\n"
         "eljev screen --criterion \"...\" --text \"one candidate\"\n"
         "eljev decide --state state.json --question question.json\n"
@@ -441,6 +456,8 @@ def main(argv: list[str] | None = None) -> int:
             return _set_enabled(False)
         if command == "status":
             return _toggle_status()
+        if command == "log":
+            return _show_log(arguments[1:])
         if command == "screen":
             return _screen(arguments[1:])
         if command == "decide":

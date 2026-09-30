@@ -330,6 +330,7 @@ class EljevRequestHandler(BaseHTTPRequestHandler):
             if question_kind == "score" and not isinstance(question.get("criteria"), Sequence):
                 raise InputValidationError("score questions must contain a criteria list")
             result = self.app.systemone.decide(state, question)
+            self.app.decision_log.append(result)
         except InputValidationError as exc:
             self._send_json(400, {"error_kind": "invalid_input", "message": str(exc), "exit_code": 1})
             return
