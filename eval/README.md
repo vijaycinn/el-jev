@@ -50,6 +50,25 @@ The root `.gitignore` must exclude `eval/corpus/*` except `.gitkeep`, generated 
 and `eval/calibration.json`; see `eval/corpus/README.md`. The root ignore file is owned by
 another agent and is intentionally not modified here.
 
+## Functional eval (smoke check)
+
+Before a calibration study, confirm the deployment works as designed. With the daemon running
+and an endpoint configured:
+
+```powershell
+python eval\scripts\functional_eval.py
+```
+
+It runs the live Foundry unit tests, routes 30 synthetic prompts through the hook's intent
+question, repeats the `noul` and 50-candidate `screen` cases for latency, exercises the gate
+with an illustrative (not fitted) calibration, and runs the hook end to end. It exits `0` only
+when every check passes, `1` on a failed check, and `2` when the daemon or endpoint is missing.
+The JSON report goes to `eval/reports/` (git-ignored). Options: `--iterations`,
+`--min-accuracy`, `--budget-ms`, `--skip-unit-tests`, `--skip-hook`.
+
+The prompts are synthetic and author-labelled, so the accuracy is a regression signal, not a
+risk claim. Use the sequence below for held-out selective-risk numbers.
+
 ## End-to-end command sequence
 
 Run from the repository root with Python 3.13. The shipped tooling uses only the

@@ -21,6 +21,7 @@ eval/calibration.json
 **/*decision-data*
 **/*transcript*
 **/*capture*
+!eval/scripts/capture.py
 **/*recording*
 *.ndjson
 *.parquet

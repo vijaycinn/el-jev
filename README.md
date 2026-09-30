@@ -299,6 +299,13 @@ python -m unittest discover -s tests
 
 Live Azure tests run only when `ELJEV_LIVE_TESTS=1` and an endpoint is configured.
 
+### Functional eval
+
+To check a live deployment end to end (routing accuracy, latency, gate and hook), run
+`python eval/scripts/functional_eval.py` with the daemon started. It exits `0` only when every
+check passes. Last run: 29/30 intent routing, 20/20 `noul`, 20/20 50-candidate `screen`, all
+gate and hook checks passing. See [eval/README.md](eval/README.md#functional-eval-smoke-check).
+
 ## License
 
 MIT

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added `eval/scripts/functional_eval.py`, a live smoke/regression eval: 30-prompt intent routing, noul and 50-candidate screen accuracy, latency percentiles, calibrated/fail-closed gate checks, and hook end-to-end. Exits 0 only when every check passes; the JSON report goes to the git-ignored `eval/reports/`.
+
+### Fixed
+
+- Fixed `.gitignore` so `eval/scripts/capture.py` is published; the `**/*capture*` data rule had excluded it, leaving step 1 of the eval harness missing from clones.
+
 ## 0.2.0 - 2026-09-30
 
 ### Added
