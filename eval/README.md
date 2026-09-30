@@ -52,8 +52,37 @@ another agent and is intentionally not modified here.
 
 ## End-to-end command sequence
 
-Run from `<path-to-el-jev>` with Python 3.13. The shipped tooling uses only the
+Run from the repository root with Python 3.13. The shipped tooling uses only the
 standard library.
+
+## Calibration file format (v0.2.0)
+
+Runtime calibration accepts:
+
+- top-level calibration keys (`temperature`, `threshold`, `margin_threshold`) for legacy/screen fallback
+- per-kind calibration blocks in `kinds.<kind>` for `screen`, `choice`, `noul`, and `score`
+
+Example:
+
+```json
+{
+  "calibration_version": "cal-2026-10-01",
+  "temperature": 1.0,
+  "threshold": 0.8,
+  "margin_threshold": 0.2,
+  "kinds": {
+    "choice": {
+      "calibration_version": "cal-choice-1",
+      "temperature": 0.05,
+      "threshold": 0.8,
+      "margin_threshold": 0.3
+    }
+  }
+}
+```
+
+`eval/scripts/calibrate.py` currently emits the top-level `screen` block only.
+Per-kind Shape A calibration blocks are currently supplied manually.
 
 ### 1. Capture replayable records
 

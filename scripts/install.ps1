@@ -19,8 +19,6 @@ $CopilotHome = if ($env:COPILOT_HOME) {
 }
 $SkillTarget = Join-Path $CopilotHome "skills\el-jev"
 $McpTarget = Join-Path $CopilotHome "mcp-config.json"
-$HookTargetDir = Join-Path $CopilotHome "hooks\eljev"
-$HookTarget = Join-Path $HookTargetDir "eljev_pre_turn.py"
 $HookConfigTarget = Join-Path $CopilotHome "hooks\eljev.json"
 $ManifestTarget = Join-Path $CopilotHome "eljev-install-manifest.json"
 
@@ -93,46 +91,24 @@ Write-Host "No existing MCP config file will be edited."
 
 Write-Host ""
 if ($InstallHook) {
-    Write-Host "Hook installation (explicit opt-in):"
-    if (Test-Path -LiteralPath $HookTarget -PathType Leaf) {
-        Write-Plan "Leave existing hook script: $HookTarget"
-    } else {
-        Write-Plan "Copy hook script: $HookSource -> $HookTarget"
-        if ($Apply) {
-            New-Item -ItemType Directory -Force -Path $HookTargetDir | Out-Null
-            Copy-Item -LiteralPath $HookSource -Destination $HookTarget
-            Add-ManifestEntry -Entries $ManifestEntries -Path $HookTarget
-        }
-    }
-
-    $HookBlock = [ordered]@{
-        version = 1
-        hooks = [ordered]@{
-            userPromptTransformed = @(
-                [ordered]@{
-                    type = "command"
-                    exec = "python"
-                    args = @($HookTarget)
-                    timeoutSec = 0.25
-                }
-            )
-        }
-    }
+    Write-Host "Hook installation (explicit opt-in, user scope):"
     if (Test-Path -LiteralPath $HookConfigTarget -PathType Leaf) {
         Write-Plan "Leave existing hook config: $HookConfigTarget"
     } else {
-        Write-Plan "Create additive hook config: $HookConfigTarget"
-        Write-Host "Hook config block:"
-        Write-Host ($HookBlock | ConvertTo-Json -Depth 8)
+        Write-Plan "Run: python -m eljev install-hook --scope user  -> $HookConfigTarget"
         if ($Apply) {
-            New-Item -ItemType Directory -Force -Path (Split-Path -Parent $HookConfigTarget) | Out-Null
-            $HookBlock | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $HookConfigTarget -Encoding utf8
-            Add-ManifestEntry -Entries $ManifestEntries -Path $HookConfigTarget
+            $previousPythonPath = $env:PYTHONPATH
+            $env:PYTHONPATH = if ($previousPythonPath) { "$RepoRoot$([IO.Path]::PathSeparator)$previousPythonPath" } else { $RepoRoot }
+            try {
+                python -m eljev install-hook --scope user | Out-Host
+            } finally {
+                $env:PYTHONPATH = $previousPythonPath
+            }
         }
     }
-    Write-Host "The hook remains off until ELJEV_HOOK_ENABLED=1 is set."
+    Write-Host "The hook runs the checkout's hooks\eljev_pre_turn.py directly; set EL_JEV=OFF to disable it."
 } else {
-    Write-Host "Hook installation: not requested; default is OFF."
+    Write-Host "Hook installation: not requested. Use -InstallHook or 'python -m eljev install-hook'."
 }
 
 Write-Host ""
@@ -142,8 +118,7 @@ $healthUri = "http://127.0.0.1:8787/health"
 $python = Get-Command python -ErrorAction SilentlyContinue
 $daemonStartArgs = @("-c", "from eljev.daemon import run; run()")
 if (-not (Test-Path -LiteralPath $daemonModule -PathType Leaf)) {
-    Write-Host "NOT RUN: daemon entrypoint is not present yet ($daemonModule)."
-    Write-Host "A1 owns eljev\daemon.py. The apply path will start it when that file exists."
+    Write-Host "NOT RUN: daemon entrypoint is missing ($daemonModule)."
 } elseif ($null -eq $python) {
     Write-Host "NOT RUN: python was not found on PATH."
 } elseif (-not $Apply) {
@@ -183,7 +158,12 @@ if (-not (Test-Path -LiteralPath $daemonModule -PathType Leaf)) {
         Write-Host "Health check passed: $healthUri"
     } finally {
         if ($startedHere -and $null -ne $daemonProcess -and -not $daemonProcess.HasExited) {
-            Stop-Process -Id $daemonProcess.Id
+            # Graceful stop lets the daemon remove its own pidfile.
+            Push-Location $RepoRoot
+            try { & $python.Source -m eljev daemon stop | Out-Null } finally { Pop-Location }
+            if (-not $daemonProcess.WaitForExit(3000)) {
+                Stop-Process -Id $daemonProcess.Id
+            }
             Write-Host "Stopped temporary daemon process $($daemonProcess.Id)."
         }
     }

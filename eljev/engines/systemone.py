@@ -1,10 +1,4 @@
-"""Shape A System One decision engine for typed choices, noul (boolean gates), and scores.
-
-Supports:
-1. Built-in classification using Cohere Rerank on Azure AI Foundry when configured.
-2. Passthrough to external System One endpoint when ELJEV_SYSTEMONE_URL is configured.
-3. Fast deterministic local heuristic fallback when offline.
-"""
+"""Shape A System One decision engine for typed choices, noul, and scores."""
 
 from __future__ import annotations
 
@@ -19,9 +13,21 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
-from uuid import uuid4
 
-from ..types import SCHEMA, utc_timestamp
+from .. import config
+from ..types import DecisionRecord
+from ..verdict import apply_gate, calibration_for, load_calibration, validate_engine_response
+from .cohere import CohereError
+
+
+DISPLAY_TEMPERATURE = 0.05
+MAX_STATE_CHARS = 100_000
+MAX_INSTRUCTIONS_CHARS = 2_000
+MIN_OPTIONS = 2
+MAX_OPTIONS = 250
+MAX_OPTION_CHARS = 2_000
+MIN_SCORE_LEVELS = 2
+MAX_SCORE_LEVELS = 10
 
 
 class SystemOneError(RuntimeError):
@@ -81,293 +87,446 @@ def _local_token_match(query: str, documents: list[str]) -> list[float]:
             continue
         intersection = query_tokens.intersection(doc_tokens)
         score = len(intersection) / math.sqrt(len(query_tokens) * len(doc_tokens) + 1.0)
-        scores.append(round(score, 6))
+        scores.append(max(0.0, float(score)))
     return scores
 
 
-def _softmax(scores: list[float], temperature: float = 0.05) -> list[float]:
+def _softmax(scores: list[float], temperature: float = DISPLAY_TEMPERATURE) -> list[float]:
     if not scores:
         return []
-    T = max(1e-4, float(temperature))
-    scaled = [s / T for s in scores]
-    max_z = max(scaled)
-    exps = [math.exp(z - max_z) for z in scaled]
-    sum_exps = sum(exps)
-    if sum_exps <= 0:
+    safe_temperature = max(1e-4, float(temperature))
+    scaled = [score / safe_temperature for score in scores]
+    max_scaled = max(scaled)
+    exps = [math.exp(value - max_scaled) for value in scaled]
+    exp_sum = sum(exps)
+    if exp_sum <= 0:
         return [1.0 / len(scores)] * len(scores)
-    return [round(e / sum_exps, 4) for e in exps]
+    return [value / exp_sum for value in exps]
+
+
+def _proportional(scores: list[float]) -> list[float]:
+    if not scores:
+        return []
+    total = sum(score for score in scores if score > 0.0)
+    if total <= 0.0:
+        return [1.0 / len(scores)] * len(scores)
+    return [max(0.0, score) / total for score in scores]
+
+
+def _elapsed_ms(start: float, engine_start: float, engine_end: float) -> dict[str, float]:
+    total_ms = (time.perf_counter() - start) * 1000.0
+    engine_ms = max(0.0, (engine_end - engine_start) * 1000.0)
+    return {
+        "total": round(total_ms, 3),
+        "pregate": 0.0,
+        "engine": round(engine_ms, 3),
+        "overhead": round(max(0.0, total_ms - engine_ms), 3),
+    }
+
+
+def _serialize_state(state: Any) -> str:
+    if isinstance(state, str):
+        state_text = state
+    elif isinstance(state, (dict, list)):
+        try:
+            state_text = json.dumps(state, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise SystemOneError("invalid_input", "state must be JSON-serializable") from exc
+    else:
+        raise SystemOneError("invalid_input", "state must be a non-empty string or JSON object/array")
+    if not state_text.strip():
+        raise SystemOneError("invalid_input", "state must not be empty")
+    if len(state_text) > MAX_STATE_CHARS:
+        raise SystemOneError("invalid_input", f"state exceeds {MAX_STATE_CHARS} characters")
+    return state_text
+
+
+def _normalize_instructions(question: Mapping[str, Any]) -> str:
+    raw = question.get("instructions")
+    if raw is None:
+        raw = question.get("description")
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        raise SystemOneError("invalid_input", "question instructions must be a string")
+    text = raw.strip()
+    if len(text) > MAX_INSTRUCTIONS_CHARS:
+        raise SystemOneError(
+            "invalid_input", f"instructions exceed {MAX_INSTRUCTIONS_CHARS} characters"
+        )
+    return text
+
+
+def _normalize_choice_options(question: Mapping[str, Any]) -> list[dict[str, str]]:
+    options_raw = question.get("options")
+    criteria_raw = question.get("criteria")
+    options: list[dict[str, str]] = []
+    if isinstance(options_raw, list):
+        for index, option in enumerate(options_raw):
+            if isinstance(option, str):
+                option_id = option.strip()
+                description = option.strip()
+            elif isinstance(option, Mapping):
+                option_id = str(option.get("id") or option.get("name") or "").strip()
+                option_text = option.get("description")
+                if option_text is None:
+                    option_text = option.get("text")
+                description = str(option_text or "").strip()
+            else:
+                raise SystemOneError("invalid_input", f"choice option {index} must be a string or object")
+            if not option_id:
+                raise SystemOneError("invalid_input", f"choice option {index} id must be non-empty")
+            if not description:
+                raise SystemOneError(
+                    "invalid_input", f"choice option {index} description must be non-empty"
+                )
+            if len(description) > MAX_OPTION_CHARS:
+                raise SystemOneError(
+                    "invalid_input",
+                    f"choice option {index} exceeds {MAX_OPTION_CHARS} characters",
+                )
+            options.append({"id": option_id, "description": description})
+    elif isinstance(criteria_raw, Mapping):
+        for option_id, description in criteria_raw.items():
+            option_text = str(description).strip()
+            option_name = str(option_id).strip()
+            if not option_name:
+                raise SystemOneError("invalid_input", "choice option id must be non-empty")
+            if not option_text:
+                raise SystemOneError(
+                    "invalid_input", f"choice option {option_name!r} description must be non-empty"
+                )
+            if len(option_text) > MAX_OPTION_CHARS:
+                raise SystemOneError(
+                    "invalid_input",
+                    f"choice option {option_name!r} exceeds {MAX_OPTION_CHARS} characters",
+                )
+            options.append({"id": option_name, "description": option_text})
+    else:
+        raise SystemOneError(
+            "invalid_input", "choice question must provide options list or criteria mapping"
+        )
+    if len(options) < MIN_OPTIONS or len(options) > MAX_OPTIONS:
+        raise SystemOneError(
+            "invalid_input", f"choice question must provide {MIN_OPTIONS}..{MAX_OPTIONS} options"
+        )
+    seen_ids: set[str] = set()
+    for option in options:
+        option_id = option["id"]
+        if option_id in seen_ids:
+            raise SystemOneError("invalid_input", f"duplicate choice option id: {option_id}")
+        seen_ids.add(option_id)
+    return options
+
+
+def _normalize_noul_candidates(question: Mapping[str, Any], instructions: str) -> list[dict[str, str]]:
+    criteria = question.get("criteria")
+    if isinstance(criteria, Mapping):
+        true_text = str(criteria.get("true") or "").strip()
+        false_text = str(criteria.get("false") or "").strip()
+    else:
+        true_text = ""
+        false_text = ""
+    if not true_text:
+        true_text = f"True: {instructions}" if instructions else "True"
+    if not false_text:
+        false_text = f"False: not {instructions}" if instructions else "False"
+    for index, text in enumerate((true_text, false_text)):
+        if not text:
+            raise SystemOneError("invalid_input", f"noul criterion {index} must be non-empty")
+        if len(text) > MAX_OPTION_CHARS:
+            raise SystemOneError(
+                "invalid_input", f"noul criterion {index} exceeds {MAX_OPTION_CHARS} characters"
+            )
+    return [{"id": "true", "description": true_text}, {"id": "false", "description": false_text}]
+
+
+def _normalize_score_levels(question: Mapping[str, Any]) -> list[str]:
+    criteria = question.get("criteria")
+    if not isinstance(criteria, Sequence) or isinstance(criteria, (str, bytes, bytearray)):
+        raise SystemOneError("invalid_input", "score question must provide a criteria list")
+    levels = [str(item).strip() for item in criteria]
+    if len(levels) < MIN_SCORE_LEVELS or len(levels) > MAX_SCORE_LEVELS:
+        raise SystemOneError(
+            "invalid_input",
+            f"score question must provide {MIN_SCORE_LEVELS}..{MAX_SCORE_LEVELS} levels",
+        )
+    for index, level in enumerate(levels):
+        if not level:
+            raise SystemOneError("invalid_input", f"score level {index} must be non-empty")
+        if len(level) > MAX_OPTION_CHARS:
+            raise SystemOneError(
+                "invalid_input", f"score level {index} exceeds {MAX_OPTION_CHARS} characters"
+            )
+    return levels
 
 
 class SystemOneEngine:
-    """Built-in decision engine mimicking TypeSafeAI Jev System One."""
+    """Built-in decision engine for typed shape A decisions."""
 
     def __init__(
         self,
         cohere: Any | None = None,
         passthrough_url: str | None = None,
-        default_temperature: float = 0.05,
+        display_temperature: float = DISPLAY_TEMPERATURE,
     ) -> None:
         self.cohere = cohere
         self.passthrough_url = passthrough_url or os.environ.get("ELJEV_SYSTEMONE_URL", "")
         self.passthrough_client = SystemOneClient(self.passthrough_url) if self.passthrough_url else None
-        self.default_temperature = default_temperature
+        self.display_temperature = display_temperature
 
     def decide(self, state: Any, question: Mapping[str, Any]) -> dict[str, Any]:
         if self.passthrough_client is not None:
             state_text = state if isinstance(state, str) else json.dumps(state, ensure_ascii=False)
             return self.passthrough_client.decide(state_text, question)
 
-        start_time = time.perf_counter()
-        state_str = state if isinstance(state, str) else json.dumps(state, ensure_ascii=False)
-        question_id = str(question.get("id") or "q1")
-        kind = str(question.get("kind") or question.get("type") or "choice").lower()
-        instructions = str(question.get("instructions") or question.get("description") or "").strip()
+        if not isinstance(question, Mapping):
+            raise SystemOneError("invalid_input", "question must be an object")
+        state_text = _serialize_state(state)
+        instructions = _normalize_instructions(question)
+        question_id_raw = question.get("id")
+        question_id = str(question_id_raw).strip() if question_id_raw is not None else "q1"
+        if not question_id:
+            raise SystemOneError("invalid_input", "question.id must be non-empty")
+        kind = str(question.get("kind") or question.get("type") or "").strip().lower()
+        if kind not in {"choice", "noul", "score"}:
+            raise SystemOneError("invalid_input", "question.kind must be choice, noul, or score")
 
         if kind == "choice":
-            return self._decide_choice(start_time, state_str, question_id, instructions, question)
-        elif kind == "noul":
-            return self._decide_noul(start_time, state_str, question_id, instructions, question)
-        elif kind == "score":
-            return self._decide_score(start_time, state_str, question_id, instructions, question)
-        else:
-            raise SystemOneError("invalid_input", f"Unsupported question kind: {kind}")
+            options = _normalize_choice_options(question)
+            candidate_ids = [option["id"] for option in options]
+            candidate_texts = [option["description"] for option in options]
+            query = self._build_query(state_text, instructions)
+            return self._evaluate(
+                question_id=question_id,
+                kind=kind,
+                criterion=instructions,
+                query=query,
+                candidate_ids=candidate_ids,
+                candidate_texts=candidate_texts,
+            )
+
+        if kind == "noul":
+            options = _normalize_noul_candidates(question, instructions)
+            candidate_ids = [option["id"] for option in options]
+            candidate_texts = [option["description"] for option in options]
+            query = self._build_query(state_text, instructions)
+            return self._evaluate(
+                question_id=question_id,
+                kind=kind,
+                criterion=instructions,
+                query=query,
+                candidate_ids=candidate_ids,
+                candidate_texts=candidate_texts,
+            )
+
+        levels = _normalize_score_levels(question)
+        query = self._build_query(state_text, instructions)
+        return self._evaluate(
+            question_id=question_id,
+            kind=kind,
+            criterion=instructions,
+            query=query,
+            candidate_ids=levels,
+            candidate_texts=levels,
+        )
+
+    @staticmethod
+    def _build_query(state: str, instructions: str) -> str:
+        if instructions:
+            return f"State: {state}\nQuestion: {instructions}"
+        return f"State: {state}"
 
     def _score_candidates(
         self, query: str, candidate_texts: list[str]
-    ) -> tuple[list[float], str, list[str]]:
-        tier_path = ["systemone"]
-        engine_name = "local_heuristic"
-        scores = [0.0] * len(candidate_texts)
-
-        if self.cohere is not None and getattr(self.cohere, "endpoint", None):
-            try:
-                rerank_resp = self.cohere.rerank(query, candidate_texts, len(candidate_texts))
-                results = rerank_resp.get("results", [])
-                for item in results:
-                    idx = item.get("index")
-                    if isinstance(idx, int) and 0 <= idx < len(scores):
-                        scores[idx] = float(item.get("relevance_score", 0.0))
-                tier_path.append("cohere")
-                engine_name = getattr(self.cohere, "deployment", "cohere-rerank-v4.0-pro")
-                return scores, engine_name, tier_path
-            except Exception:
-                tier_path.append("local_heuristic_fallback")
-        else:
-            tier_path.append("local_heuristic")
+    ) -> tuple[list[float], str, list[str], bool]:
+        if self.cohere is not None and getattr(self.cohere, "endpoint", ""):
+            rerank_response = self.cohere.rerank(query, candidate_texts, len(candidate_texts))
+            validated, error = validate_engine_response(rerank_response, len(candidate_texts))
+            if validated is None or error is not None:
+                raise CohereError("malformed", error or "invalid response")
+            if len(validated) != len(candidate_texts):
+                # Softmax needs a dense score vector; zero-filling omitted candidates
+                # would fabricate a wide margin, so a partial ranking fails closed.
+                raise CohereError(
+                    "malformed",
+                    f"provider scored {len(validated)} of {len(candidate_texts)} candidates",
+                )
+            scores = [0.0] * len(candidate_texts)
+            for item in validated:
+                scores[item["index"]] = float(item["relevance_score"])
+            engine_name = str(getattr(self.cohere, "deployment", config.cohere_deployment()))
+            return scores, engine_name, ["systemone", "cohere"], True
 
         scores = _local_token_match(query, candidate_texts)
-        return scores, engine_name, tier_path
+        return scores, "local_heuristic", ["systemone", "local_heuristic"], False
 
-    def _decide_choice(
+    def _build_failure_record(
         self,
-        start_time: float,
-        state: str,
+        *,
         question_id: str,
-        instructions: str,
-        question: Mapping[str, Any],
+        kind: str,
+        criterion: str,
+        tier_path: list[str],
+        engine_name: str,
+        status: str,
+        error_kind: str,
+        note: str,
+        elapsed: dict[str, float],
     ) -> dict[str, Any]:
-        options_raw = question.get("options")
-        criteria_raw = question.get("criteria")
+        record = DecisionRecord(
+            shape="decide",
+            criterion=criterion,
+            n_candidates=0,
+            tier_path=tier_path,
+            engine=engine_name,
+            choice=None,
+            choice_index=None,
+            status=status,
+            exit_code=2,
+            raw_top_score=None,
+            raw_runner_up=None,
+            margin_raw=None,
+            calibrated_probability=None,
+            margin_calibrated=None,
+            calibration_version="none",
+            coverage_policy=config.coverage_policy(),
+            results=[],
+            elapsed_ms=elapsed,
+            error_kind=error_kind,
+            notes=[note],
+        )
+        payload = record.to_dict()
+        payload.update(
+            {
+                "question_id": question_id,
+                "kind": kind,
+                "confidence": None,
+                "probabilities": None,
+                "margin": None,
+                "noul": None,
+                "score": None,
+            }
+        )
+        return payload
 
-        options: list[dict[str, str]] = []
-        if isinstance(options_raw, list):
-            for opt in options_raw:
-                if isinstance(opt, Mapping):
-                    opt_id = str(opt.get("id") or opt.get("name") or "")
-                    desc = str(opt.get("description") or opt.get("text") or opt_id)
-                    options.append({"id": opt_id, "description": desc})
-                elif isinstance(opt, str):
-                    options.append({"id": opt, "description": opt})
-        elif isinstance(criteria_raw, Mapping):
-            for opt_id, desc in criteria_raw.items():
-                options.append({"id": str(opt_id), "description": str(desc)})
+    def _evaluate(
+        self,
+        *,
+        question_id: str,
+        kind: str,
+        criterion: str,
+        query: str,
+        candidate_ids: list[str],
+        candidate_texts: list[str],
+    ) -> dict[str, Any]:
+        started = time.perf_counter()
+        engine_started = time.perf_counter()
+        try:
+            raw_scores, engine_name, tier_path, trusted = self._score_candidates(query, candidate_texts)
+        except CohereError as exc:
+            engine_ended = time.perf_counter()
+            return self._build_failure_record(
+                question_id=question_id,
+                kind=kind,
+                criterion=criterion,
+                tier_path=["systemone", "cohere"],
+                engine_name=config.cohere_deployment(),
+                status="invalid_response" if exc.error_kind == "malformed" else "engine_error",
+                error_kind=exc.error_kind,
+                note=(
+                    "Cohere returned a malformed response"
+                    if exc.error_kind == "malformed"
+                    else "Cohere engine call failed"
+                ),
+                elapsed=_elapsed_ms(started, engine_started, engine_ended),
+            )
+        engine_ended = time.perf_counter()
 
-        if not options:
-            raise SystemOneError("invalid_input", "choice question must provide options or criteria")
+        calibration = load_calibration()
+        params, calibration_note = calibration_for(calibration, kind)
+        temperature = float(params["temperature"]) if params is not None else self.display_temperature
+        probabilities = (
+            _softmax(raw_scores, temperature=temperature) if trusted else _proportional(raw_scores)
+        )
+        ranked_indices = sorted(
+            range(len(candidate_ids)),
+            key=lambda index: (-probabilities[index], index),
+        )
+        top_index = ranked_indices[0]
+        runner_index = ranked_indices[1] if len(ranked_indices) > 1 else None
+        top_probability = float(probabilities[top_index])
+        runner_probability = float(probabilities[runner_index]) if runner_index is not None else None
 
-        query = f"State: {state}\nQuestion: {instructions}" if instructions else f"State: {state}"
-        candidate_texts = [
-            f"{opt['id']}: {opt['description']}"
-            if opt["description"] and opt["description"] != opt["id"]
-            else opt["id"]
-            for opt in options
+        gate = apply_gate(
+            top=top_probability,
+            runner_up=runner_probability,
+            policy=config.coverage_policy(),
+            params=params,
+            trusted=trusted,
+            calibration_note=calibration_note,
+        )
+
+        choice = candidate_ids[top_index]
+        choice_index: int | None = top_index
+        if gate["status"] == "abstain_tie":
+            choice = None
+            choice_index = None
+
+        raw_top_score = float(raw_scores[top_index])
+        raw_runner_score = float(raw_scores[runner_index]) if runner_index is not None else None
+        margin_raw = (
+            raw_top_score - raw_runner_score if raw_runner_score is not None else None
+        )
+        margin_probability = (
+            top_probability - runner_probability if runner_probability is not None else None
+        )
+        results = [
+            {
+                "id": candidate_ids[index],
+                "index": index,
+                "relevance_score": float(raw_scores[index]),
+            }
+            for index in ranked_indices
         ]
-
-        scores, engine_name, tier_path = self._score_candidates(query, candidate_texts)
-        temperature = float(question.get("temperature") or self.default_temperature)
-        probs = _softmax(scores, temperature)
-
-        top_idx = max(range(len(probs)), key=lambda i: probs[i])
-        choice = options[top_idx]["id"]
-        confidence = probs[top_idx]
-        probabilities = {opt["id"]: p for opt, p in zip(options, probs)}
-
-        sorted_probs = sorted(probs, reverse=True)
-        margin = sorted_probs[0] - sorted_probs[1] if len(sorted_probs) > 1 else sorted_probs[0]
-
-        policy = os.environ.get("ELJEV_COVERAGE_POLICY", "always_abstain_v0")
-        if policy == "calibrated":
-            if confidence >= 0.60 and (len(options) == 1 or margin >= 0.10):
-                status = "selected"
-                exit_code = 0
-            else:
-                status = "needs_review"
-                exit_code = 2
-        else:
-            status = "needs_review"
-            exit_code = 2
-
-        elapsed = round((time.perf_counter() - start_time) * 1000.0, 3)
-        ranked_results = [
-            {"id": opt["id"], "index": idx, "relevance_score": scores[idx], "probability": probs[idx]}
-            for idx, opt in enumerate(options)
-        ]
-        ranked_results.sort(key=lambda item: item["probability"], reverse=True)
-
-        return {
-            "schema": SCHEMA,
-            "decision_id": str(uuid4()),
-            "ts": utc_timestamp(),
-            "shape": "decide",
-            "question_id": question_id,
-            "kind": "choice",
-            "criterion": instructions,
-            "n_candidates": len(options),
-            "tier_path": tier_path,
-            "engine": engine_name,
-            "choice": choice,
-            "choice_index": top_idx,
-            "status": status,
-            "exit_code": exit_code,
-            "confidence": confidence,
-            "probabilities": probabilities,
-            "margin": round(margin, 4),
-            "results": ranked_results,
-            "elapsed_ms": {"total": elapsed, "engine": elapsed},
-            "coverage_policy": policy,
-            "notes": [f"Evaluated {len(options)} options via {engine_name}"],
-        }
-
-    def _decide_noul(
-        self,
-        start_time: float,
-        state: str,
-        question_id: str,
-        instructions: str,
-        question: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        criteria = question.get("criteria")
-        if isinstance(criteria, Mapping):
-            true_text = str(criteria.get("true") or f"True: {instructions}")
-            false_text = str(criteria.get("false") or f"False: Not {instructions}")
-        else:
-            true_text = f"True: {instructions}" if instructions else "True: Statement holds"
-            false_text = f"False: Not {instructions}" if instructions else "False: Statement does not hold"
-
-        query = f"State: {state}\nQuestion: {instructions}" if instructions else f"State: {state}"
-        candidate_texts = [true_text, false_text]
-
-        scores, engine_name, tier_path = self._score_candidates(query, candidate_texts)
-        temperature = float(question.get("temperature") or self.default_temperature)
-        probs = _softmax(scores, temperature)
-
-        p_true, p_false = probs[0], probs[1]
-        noul_val = round(p_true, 4)
-        choice = "true" if p_true >= 0.5 else "false"
-        confidence = round(max(p_true, p_false), 4)
-        probabilities = {"true": noul_val, "false": round(p_false, 4)}
-        margin = round(abs(p_true - p_false), 4)
-
-        policy = os.environ.get("ELJEV_COVERAGE_POLICY", "always_abstain_v0")
-        if policy == "calibrated" and confidence >= 0.60:
-            status = "selected"
-            exit_code = 0
-        else:
-            status = "needs_review"
-            exit_code = 2
-
-        elapsed = round((time.perf_counter() - start_time) * 1000.0, 3)
-        return {
-            "schema": SCHEMA,
-            "decision_id": str(uuid4()),
-            "ts": utc_timestamp(),
-            "shape": "decide",
-            "question_id": question_id,
-            "kind": "noul",
-            "criterion": instructions,
-            "n_candidates": 2,
-            "tier_path": tier_path,
-            "engine": engine_name,
-            "choice": choice,
-            "choice_index": 0 if choice == "true" else 1,
-            "noul": noul_val,
-            "status": status,
-            "exit_code": exit_code,
-            "confidence": confidence,
-            "probabilities": probabilities,
-            "margin": margin,
-            "elapsed_ms": {"total": elapsed, "engine": elapsed},
-            "coverage_policy": policy,
-            "notes": [f"Noul evaluation: p(true)={noul_val:.4f}"],
-        }
-
-    def _decide_score(
-        self,
-        start_time: float,
-        state: str,
-        question_id: str,
-        instructions: str,
-        question: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        criteria = question.get("criteria")
-        if not isinstance(criteria, Sequence) or isinstance(criteria, (str, bytes)):
-            raise SystemOneError("invalid_input", "score question must provide a criteria list of levels")
-
-        levels = [str(item) for item in criteria]
-        if len(levels) < 2:
-            raise SystemOneError("invalid_input", "score question must have at least 2 levels")
-
-        query = f"State: {state}\nQuestion: {instructions}" if instructions else f"State: {state}"
-        candidate_texts = [f"Level {idx + 1}: {lvl}" for idx, lvl in enumerate(levels)]
-
-        scores, engine_name, tier_path = self._score_candidates(query, candidate_texts)
-        temperature = float(question.get("temperature") or self.default_temperature)
-        probs = _softmax(scores, temperature)
-
-        top_idx = max(range(len(probs)), key=lambda i: probs[i])
-        expected_score = round(sum(idx * p for idx, p in enumerate(probs)) + 1.0, 2)
-        probabilities = {levels[idx]: probs[idx] for idx in range(len(levels))}
-        confidence = probs[top_idx]
-
-        policy = os.environ.get("ELJEV_COVERAGE_POLICY", "always_abstain_v0")
-        if policy == "calibrated" and confidence >= 0.50:
-            status = "selected"
-            exit_code = 0
-        else:
-            status = "needs_review"
-            exit_code = 2
-
-        elapsed = round((time.perf_counter() - start_time) * 1000.0, 3)
-        return {
-            "schema": SCHEMA,
-            "decision_id": str(uuid4()),
-            "ts": utc_timestamp(),
-            "shape": "decide",
-            "question_id": question_id,
-            "kind": "score",
-            "criterion": instructions,
-            "n_candidates": len(levels),
-            "tier_path": tier_path,
-            "engine": engine_name,
-            "choice": levels[top_idx],
-            "choice_index": top_idx,
-            "score": expected_score,
-            "status": status,
-            "exit_code": exit_code,
-            "confidence": confidence,
-            "probabilities": probabilities,
-            "elapsed_ms": {"total": elapsed, "engine": elapsed},
-            "coverage_policy": policy,
-            "notes": [f"Score evaluation: expected level {expected_score}"],
-        }
-
+        record = DecisionRecord(
+            shape="decide",
+            criterion=criterion,
+            n_candidates=len(candidate_ids),
+            tier_path=tier_path,
+            engine=engine_name,
+            choice=choice,
+            choice_index=choice_index,
+            status=str(gate["status"]),
+            exit_code=int(gate["exit_code"]),
+            raw_top_score=raw_top_score,
+            raw_runner_up=raw_runner_score,
+            margin_raw=margin_raw,
+            calibrated_probability=top_probability,
+            margin_calibrated=margin_probability,
+            calibration_version=str(gate["calibration_version"]),
+            coverage_policy=config.coverage_policy(),
+            results=results,
+            elapsed_ms=_elapsed_ms(started, engine_started, engine_ended),
+            notes=list(gate["notes"]),
+        )
+        payload = record.to_dict()
+        payload.update(
+            {
+                "question_id": question_id,
+                "kind": kind,
+                "confidence": top_probability,
+                "probabilities": {
+                    candidate_ids[index]: float(probabilities[index])
+                    for index in range(len(candidate_ids))
+                },
+                "margin": margin_probability,
+                "noul": float(probabilities[0]) if kind == "noul" else None,
+                "score": (
+                    sum((index + 1) * float(probabilities[index]) for index in range(len(candidate_ids)))
+                    if kind == "score"
+                    else None
+                ),
+            }
+        )
+        return payload

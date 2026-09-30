@@ -10,17 +10,12 @@ from pathlib import Path
 import threading
 from typing import Any
 
+from . import config
 from .types import Candidate, DecisionRecord
 
 
 def default_log_dir() -> Path:
-    env_dir = os.environ.get("ELJEV_LOG_DIR")
-    if env_dir:
-        return Path(env_dir).expanduser()
-    local_root = Path(__file__).resolve().parent.parent / ".eljev" / "logs"
-    if local_root.parent.exists():
-        return local_root
-    return Path(r".eljev/logs")
+    return config.log_dir()
 
 
 def redact_enabled() -> bool:
@@ -28,12 +23,7 @@ def redact_enabled() -> bool:
 
 
 def logging_enabled() -> bool:
-    val = os.environ.get("ELJEV_LOGGING")
-    if val is not None:
-        return val.strip().lower() not in {"0", "false", "off", "no", "disable"}
-    if os.environ.get("ELJEV_NO_LOG") in {"1", "true", "yes"}:
-        return False
-    return True
+    return config.logging_enabled()
 
 
 class DecisionLog:

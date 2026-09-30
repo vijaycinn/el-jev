@@ -1,62 +1,47 @@
 # Task-shaping guide
 
-el-jev is a decision sidecar. It is useful after the host has a bounded set of
-candidate records. It is not a search engine or an agent for discovering what
-the candidates should be.
+`el-jev` works after candidates are already bounded.
+It does not discover candidates for you.
 
-## The one-cheap-pull rule
+## One-cheap-pull rule
 
-A task is el-jev-shaped when the candidates are:
+Use `el-jev` only when candidates are:
 
-1. already in memory or in the current request; or
-2. obtainable with one cheap, deterministic pull such as a fixed SQL query,
-   one API request, or a known file read.
+1. already available in the request/context, or
+2. retrievable in one deterministic pull (single query, fixed API call, known file read).
 
-It is not el-jev-shaped when an LLM, subagent, multi-step search, or human
-research process must assemble the candidate set. Make discovery a separate
-host step. Then pass only the bounded result into el-jev.
+If discovery needs an LLM or multi-step search, perform discovery first.
 
 ## Shape selection
 
-| Question | Shape A | Shape B |
-|---|---|---|
-| Candidate form | Known labels or short options | Open records or snippets |
-| Typical count | 5-30 | 1-250 |
-| Typical request | Route, classify, choose, boolean/noul | Rank or screen against a criterion |
-| Backend | Local `/v1/systemone` if configured | Cohere rerank deployment |
-| Important limit | Option descriptions must stay short | 2,000 chars each and 100,000 total |
-
-Use Shape A when the host can name the complete answer set before the call.
-Use Shape B when the answer set is open and the host has the records.
+| Shape | Candidate form | Typical count | Use case |
+|---|---|---:|---|
+| `choice` | fixed options | 2-250 | routing/classification |
+| `noul` | boolean framing | 2 semantic outcomes | yes/no gate |
+| `score` | ordered levels | 2-10 | severity/priority scoring |
+| `screen` | open records/snippets | 1-250 | reranking |
 
 ## Rewrite examples
 
-| Do not ask | Ask instead |
+| Fuzzy ask | Typed ask |
 |---|---|
-| "What should I do next?" | "Choose one of `reply`, `delegate`, `FYI`, or `urgent` for this message." |
-| "Find urgent work." | "Rank these 40 open items against `urgent action needed today`." |
-| "Pick the best account from our CRM." | "Rank this deterministic export of 25 accounts against `renewal risk this quarter`." |
-| "Search Teams, email, and CRM for a deal." | "The host fetched these 50 opportunities; rank them against `next action likely to unblock close`." |
+| "What should I do next?" | "Choose one of `reply`, `delegate`, `FYI`, `urgent`." |
+| "Find urgent work." | "Rank these 40 items against `urgent action needed today`." |
+| "How severe is this incident?" | "Score this incident against levels `sev4`..`sev1`." |
+| "Pick the best account." | "Rank this deterministic export of 25 accounts for renewal risk." |
 
 ## Candidate preparation
 
-- Preserve a stable candidate ID.
-- Keep the text decision-relevant and redact secrets before the call.
-- Preserve original order; the returned `choice_index` uses it.
-- Count characters before calling. A violation is rejected, not truncated.
-- Do not compare raw scores from separate calls.
-- Do not turn a relevance ranking into an urgency or authorization rule.
+- Keep stable candidate ids.
+- Keep text decision-relevant and secret-safe.
+- Preserve original order (`choice_index` refers to original array).
+- Enforce caps before call (count, per-item chars, total chars).
+- Do not compare raw scores across separate calls.
 
-## Host boundary
+## Gate interpretation
 
-The host owns authorization, execution, completion, retries outside the
-engine contract, and any user-visible action. el-jev only advises. A
-`choice` field can identify the top-ranked item while `exit_code: 2` says the
-host must not auto-act under v0.
+- Default policy is advisory (`always_abstain_v0`).
+- In calibrated mode, thresholds are read from calibration data (`threshold`, `margin_threshold`) per kind.
+- Do not hardcode numeric thresholds in task logic.
+- A ranked/selected candidate is still subject to host authorization rules.
 
-## Evidence boundary
-
-The measured live distribution had a top-1/top-2 raw margin of `0.00045019`,
-and exact ties including `0.64027600` four times. v0 therefore attaches the
-ranking but abstains. Calibration must be fitted on the user's own labelled
-data before any policy can return exit code 0.

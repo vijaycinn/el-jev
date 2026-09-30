@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import json
 import math
 from typing import Any
 
+from . import config
 from .types import Candidate
 
 
@@ -71,7 +73,7 @@ def _invalid_verdict(message: str, policy: str) -> dict[str, Any]:
     }
 
 
-def _valid_calibration(calibration: Any) -> tuple[float, float, float, str] | None:
+def _valid_calibration(calibration: Any) -> dict[str, Any] | None:
     if not isinstance(calibration, Mapping):
         return None
     temperature = calibration.get("temperature")
@@ -92,15 +94,50 @@ def _valid_calibration(calibration: Any) -> tuple[float, float, float, str] | No
         or not math.isfinite(float(margin_threshold))
         or not 0.0 <= float(margin_threshold) <= 1.0
         or not isinstance(calibration_version, str)
-        or not calibration_version
+        or not calibration_version.strip()
     ):
         return None
-    return (
-        float(temperature),
-        float(threshold),
-        float(margin_threshold),
-        calibration_version,
-    )
+    return {
+        "temperature": float(temperature),
+        "threshold": float(threshold),
+        "margin_threshold": float(margin_threshold),
+        "calibration_version": calibration_version.strip(),
+    }
+
+
+def load_calibration() -> dict[str, Any] | None:
+    """Load optional calibration from configured path without raising."""
+
+    path = config.calibration_path()
+    try:
+        with path.open("r", encoding="utf-8") as stream:
+            value = json.load(stream)
+    except (OSError, ValueError, TypeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def calibration_for(calibration: Any, kind: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Get validated per-kind calibration parameters."""
+
+    if kind not in {"screen", "choice", "noul", "score"}:
+        return None, f"unsupported calibration kind {kind!r}"
+    if not isinstance(calibration, Mapping):
+        return None, f"no valid calibration for kind {kind!r}"
+
+    by_kind = calibration.get("kinds")
+    if isinstance(by_kind, Mapping):
+        candidate = by_kind.get(kind)
+        parsed = _valid_calibration(candidate)
+        if parsed is not None:
+            return parsed, None
+
+    if kind == "screen":
+        parsed = _valid_calibration(calibration)
+        if parsed is not None:
+            return parsed, None
+
+    return None, f"no valid calibration for kind {kind!r}"
 
 
 def _temperature_scale(score: float, temperature: float) -> float:
@@ -111,6 +148,92 @@ def _temperature_scale(score: float, temperature: float) -> float:
         return 1.0 / (1.0 + math.exp(-scaled))
     exp_scaled = math.exp(scaled)
     return exp_scaled / (1.0 + exp_scaled)
+
+
+def apply_gate(
+    *,
+    top: float,
+    runner_up: float | None,
+    policy: str,
+    params: Mapping[str, Any] | None,
+    trusted: bool = True,
+    calibration_note: str | None = None,
+) -> dict[str, Any]:
+    """Apply the single contract gate for all shapes and policies."""
+
+    calibration_version = (
+        str(params.get("calibration_version"))
+        if isinstance(params, Mapping) and isinstance(params.get("calibration_version"), str)
+        else "none"
+    )
+    notes: list[str] = []
+
+    if runner_up is not None and top == runner_up:
+        return {
+            "status": "abstain_tie",
+            "exit_code": 2,
+            "notes": ["top two relevance scores are exactly equal"],
+            "calibration_version": calibration_version,
+        }
+
+    if not trusted:
+        return {
+            "status": "needs_review",
+            "exit_code": 2,
+            "notes": ["uncalibrated local heuristic; advisory only"],
+            "calibration_version": calibration_version,
+        }
+
+    if policy == "always_abstain_v0":
+        return {
+            "status": "needs_review",
+            "exit_code": 2,
+            "notes": [],
+            "calibration_version": calibration_version,
+        }
+
+    if policy == "calibrated":
+        if params is None:
+            notes.append(
+                calibration_note or "calibrated coverage unavailable: calibration is missing or invalid"
+            )
+            return {
+                "status": "needs_review",
+                "exit_code": 2,
+                "notes": notes,
+                "calibration_version": "none",
+            }
+        if runner_up is None:
+            notes.append("calibrated margin term was vacuous: no runner-up exists")
+            return {
+                "status": "needs_review",
+                "exit_code": 2,
+                "notes": notes,
+                "calibration_version": calibration_version,
+            }
+        threshold = float(params["threshold"])
+        margin_threshold = float(params["margin_threshold"])
+        probability_passes = top >= threshold
+        margin_value = top - runner_up
+        margin_passes = margin_value >= margin_threshold
+        if not probability_passes:
+            notes.append("calibrated probability below threshold")
+        if not margin_passes:
+            notes.append("calibrated margin below margin_threshold")
+        return {
+            "status": "selected" if probability_passes and margin_passes else "needs_review",
+            "exit_code": 0 if probability_passes and margin_passes else 2,
+            "notes": notes,
+            "calibration_version": calibration_version,
+        }
+
+    notes.append(f"unknown coverage policy {policy!r}; abstaining")
+    return {
+        "status": "needs_review",
+        "exit_code": 2,
+        "notes": notes,
+        "calibration_version": calibration_version,
+    }
 
 
 def verdict_from_engine(
@@ -148,7 +271,31 @@ def verdict_from_engine(
     runner_score = float(runner_up["relevance_score"]) if runner_up else None
     margin_raw = top_score - runner_score if runner_score is not None else None
 
-    common = {
+    calibration_params: dict[str, Any] | None = None
+    calibration_note: str | None = None
+    calibrated_top: float | None = None
+    calibrated_runner: float | None = None
+    if policy == "calibrated":
+        calibration_params, calibration_note = calibration_for(calibration, "screen")
+        if calibration_params is not None:
+            calibrated_top = _temperature_scale(top_score, float(calibration_params["temperature"]))
+            calibrated_runner = (
+                _temperature_scale(runner_score, float(calibration_params["temperature"]))
+                if runner_score is not None
+                else None
+            )
+
+    gate_top = calibrated_top if calibrated_top is not None else top_score
+    gate_runner = calibrated_runner if calibrated_runner is not None else runner_score
+    gate = apply_gate(
+        top=gate_top,
+        runner_up=gate_runner,
+        policy=policy,
+        params=calibration_params,
+        calibration_note=calibration_note,
+    )
+
+    verdict = {
         "choice": _candidate_id(candidates[top["index"]]),
         "choice_index": int(top["index"]),
         "raw_top_score": top_score,
@@ -156,64 +303,25 @@ def verdict_from_engine(
         "margin_raw": margin_raw,
         "results": result_dicts,
         "escalation_reason": None,
-        "notes": [],
+        "notes": gate["notes"],
         "error_kind": None,
         "coverage_policy": policy,
-        "calibration_version": "none",
-        "calibrated_probability": None,
-        "margin_calibrated": None,
+        "calibration_version": gate["calibration_version"],
+        "calibrated_probability": calibrated_top,
+        "margin_calibrated": (
+            calibrated_top - calibrated_runner
+            if calibrated_top is not None and calibrated_runner is not None
+            else calibrated_top
+            if calibrated_top is not None
+            else None
+        ),
+        "status": gate["status"],
+        "exit_code": gate["exit_code"],
     }
-
-    if runner_up is not None and top_score == runner_score:
-        common.update(
-            choice=None,
-            choice_index=None,
-            status="abstain_tie",
-            exit_code=2,
-            notes=["top two relevance scores are exactly equal"],
-        )
-        return common
-
-    if policy == "calibrated":
-        parsed_calibration = _valid_calibration(calibration)
-        if parsed_calibration is None:
-            common.update(
-                status="needs_review",
-                exit_code=2,
-                notes=["calibrated coverage unavailable: calibration is missing or invalid"],
-            )
-            return common
-        temperature, threshold, margin_threshold, version = parsed_calibration
-        calibrated_top = _temperature_scale(top_score, temperature)
-        calibrated_runner = (
-            _temperature_scale(runner_score, temperature) if runner_score is not None else 0.0
-        )
-        calibrated_margin = calibrated_top - calibrated_runner
-        common.update(
-            calibration_version=version,
-            calibrated_probability=calibrated_top,
-            margin_calibrated=calibrated_margin,
-        )
-        probability_passes = calibrated_top >= threshold
-        margin_passes = calibrated_margin >= margin_threshold
-        if runner_up is None:
-            common["notes"] = [
-                "calibrated margin term was vacuous: no runner-up exists"
-            ]
-        if not probability_passes:
-            common["notes"].append("calibrated probability below threshold")
-        if not margin_passes:
-            common["notes"].append("calibrated margin below margin_threshold")
-        if runner_up is not None and probability_passes and margin_passes:
-            common.update(status="selected", exit_code=0)
-        else:
-            common.update(status="needs_review", exit_code=2)
-        return common
-
-    if policy != "always_abstain_v0":
-        common["notes"] = [f"unknown coverage policy {policy!r}; abstaining"]
-    common.update(status="needs_review", exit_code=2)
-    return common
+    if gate["status"] == "abstain_tie":
+        verdict["choice"] = None
+        verdict["choice_index"] = None
+    return verdict
 
 
 def score_to_verdict(*args: Any, **kwargs: Any) -> dict[str, Any]:

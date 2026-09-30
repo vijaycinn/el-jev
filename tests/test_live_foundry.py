@@ -1,43 +1,63 @@
-"""Live integration tests against Azure AI Foundry Cohere deployment.
-
-Requires:
-- az login completed
-- ELJEV_COHERE_ENDPOINT set or pointing to Foundry
-"""
-
 import os
+import tempfile
 import unittest
+from unittest.mock import patch
+
+from eljev import config
 from eljev.engines.cohere import CohereClient
 from eljev.engines.systemone import SystemOneEngine
+from eljev.validate import normalize_candidates
+from eljev.verdict import verdict_from_engine
 
 
+@unittest.skipUnless(
+    os.environ.get("ELJEV_LIVE_TESTS") == "1" and config.cohere_endpoint(),
+    "Set ELJEV_LIVE_TESTS=1 and configure ELJEV_COHERE_ENDPOINT to run live tests",
+)
 class LiveFoundryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.endpoint = os.environ.get(
-            "ELJEV_COHERE_ENDPOINT",
-            "https://<your-resource>.services.ai.azure.com",
-        )
-        cls.deployment = os.environ.get(
-            "ELJEV_COHERE_DEPLOYMENT", "Cohere-rerank-v4.0-pro"
-        )
+        cls.endpoint = config.cohere_endpoint()
+        cls.deployment = config.cohere_deployment()
+        cls.subscription = config.azure_subscription()
         cls.client = CohereClient(endpoint=cls.endpoint, deployment=cls.deployment)
 
-    def test_live_rerank_shape_b(self):
+    def setUp(self) -> None:
+        self._tempdir = tempfile.TemporaryDirectory()
+        environment = {
+            "ELJEV_DIR": self._tempdir.name,
+            "ELJEV_COVERAGE_POLICY": "always_abstain_v0",
+        }
+        if self.subscription:
+            # The temp ELJEV_DIR hides config.json, so carry the token subscription pin through.
+            environment["ELJEV_AZURE_SUBSCRIPTION"] = self.subscription
+        self._environment = patch.dict(os.environ, environment, clear=False)
+        self._environment.start()
+
+    def tearDown(self) -> None:
+        self._environment.stop()
+        self._tempdir.cleanup()
+
+    def test_live_screen_ranks_outage_first_and_default_policy_abstains(self):
         query = "which item is most urgent to act on today"
         docs = [
-            "Review routine weekly status report",
-            "Production outage affecting enterprise customers",
-            "Fix minor typo in README",
+            {"id": "status_report", "text": "Review routine weekly status report"},
+            {"id": "prod_outage", "text": "Production outage affecting enterprise customers"},
+            {"id": "readme_typo", "text": "Fix minor typo in README"},
         ]
-        res = self.client.rerank(query, docs, top_n=3)
-        self.assertIn("results", res)
-        self.assertEqual(len(res["results"]), 3)
-        # Production outage (index 1) should rank top
-        top_result = max(res["results"], key=lambda x: x["relevance_score"])
+        response = self.client.rerank(query, [item["text"] for item in docs], top_n=3)
+        top_result = max(response["results"], key=lambda item: item["relevance_score"])
         self.assertEqual(top_result["index"], 1)
 
-    def test_live_systemone_choice_shape_a(self):
+        verdict = verdict_from_engine(
+            response,
+            normalize_candidates(docs),
+            policy="always_abstain_v0",
+        )
+        self.assertEqual(verdict["choice"], "prod_outage")
+        self.assertEqual(verdict["exit_code"], 2)
+
+    def test_live_systemone_choice_billing_refunds_default_policy_exit2(self):
         engine = SystemOneEngine(cohere=self.client)
         state = "User reported billing duplicate charge of $500 on their AMEX card."
         question = {
@@ -50,13 +70,13 @@ class LiveFoundryTests(unittest.TestCase):
                 "marketing": "Handles promotional campaigns and newsletters",
             },
         }
-        res = engine.decide(state, question)
-        self.assertEqual(res["shape"], "decide")
-        self.assertEqual(res["kind"], "choice")
-        self.assertEqual(res["choice"], "billing_refunds")
-        self.assertGreater(res["confidence"], 0.85)
+        result = engine.decide(state, question)
+        self.assertEqual(result["shape"], "decide")
+        self.assertEqual(result["kind"], "choice")
+        self.assertEqual(result["choice"], "billing_refunds")
+        self.assertEqual(result["exit_code"], 2)
 
-    def test_live_systemone_noul_shape_a(self):
+    def test_live_systemone_noul_true_default_policy_exit2(self):
         engine = SystemOneEngine(cohere=self.client)
         state = "Incident: Primary SQL database cluster has been unreachable for 15 minutes."
         question = {
@@ -68,10 +88,10 @@ class LiveFoundryTests(unittest.TestCase):
                 "false": "Low severity non-critical informational event",
             },
         }
-        res = engine.decide(state, question)
-        self.assertEqual(res["kind"], "noul")
-        self.assertEqual(res["choice"], "true")
-        self.assertGreater(res["noul"], 0.90)
+        result = engine.decide(state, question)
+        self.assertEqual(result["kind"], "noul")
+        self.assertEqual(result["choice"], "true")
+        self.assertEqual(result["exit_code"], 2)
 
 
 if __name__ == "__main__":

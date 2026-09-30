@@ -1,44 +1,41 @@
 # `eljev.decision/1` decision record
 
-This is the complete decision-record reference for the daemon, clients, logs,
-and front doors.
+`el-jev` emits `eljev.decision/1` for Shape A (`choice`, `noul`, `score`) and Shape B (`screen`).
+The schema string is unchanged in v0.2.0; Shape A fields are additive.
 
-## Canonical shape
+## Base contract example (Shape B)
 
 ```json
 {
   "schema": "eljev.decision/1",
   "decision_id": "uuid4",
-  "ts": "2026-09-24T18:00:00.000Z",
+  "ts": "2026-09-30T15:04:01.000Z",
   "shape": "screen",
-  "criterion": "which item is most urgent",
-  "n_candidates": 50,
-  "tier_path": ["pregate", "cohere"],
+  "criterion": "most urgent item to fix",
+  "n_candidates": 5,
+  "tier_path": ["systemone", "cohere"],
   "engine": "cohere-rerank-v4.0-pro",
   "engine_version": "1",
-  "choice": "c3",
-  "choice_index": 3,
+  "choice": "bug-3",
+  "choice_index": 2,
   "status": "needs_review",
   "exit_code": 2,
-  "raw_top_score": 0.92933786,
-  "raw_runner_up": 0.92888767,
-  "margin_raw": 0.00045019,
+  "raw_top_score": 0.93,
+  "raw_runner_up": 0.91,
+  "margin_raw": 0.02,
   "calibrated_probability": null,
   "margin_calibrated": null,
   "calibration_version": "none",
   "coverage_policy": "always_abstain_v0",
   "results": [
-    {
-      "id": "c3",
-      "index": 3,
-      "relevance_score": 0.92933786
-    }
+    { "id": "bug-3", "index": 2, "relevance_score": 0.93 },
+    { "id": "bug-2", "index": 1, "relevance_score": 0.91 }
   ],
   "elapsed_ms": {
-    "total": 187.4,
+    "total": 188.2,
     "pregate": 0.1,
     "engine": 183.0,
-    "overhead": 4.3
+    "overhead": 5.1
   },
   "escalation_reason": null,
   "error_kind": null,
@@ -46,84 +43,66 @@ and front doors.
 }
 ```
 
-## Field contract
+## Shape A additive fields
 
-| Field | Type | Required meaning |
-|---|---|---|
-| `schema` | string | Exact value `eljev.decision/1`. |
-| `decision_id` | string | UUID4 for this decision. |
-| `ts` | string | UTC ISO-8601 timestamp with milliseconds. |
-| `shape` | string | `screen`, `decide`, or `pregate`. |
-| `criterion` | string | Non-empty criterion used for the decision. |
-| `n_candidates` | integer | Validated input count. |
-| `tier_path` | array[string] | Ordered tiers actually executed. |
-| `engine` | string/null | Engine name, or null if no model ran. |
-| `engine_version` | string | Engine version identifier. |
-| `choice` | string/null | Top candidate ID, or null. This is not approval. |
-| `choice_index` | integer/null | Original input-array index, or null. |
-| `status` | string | One of the status values below. |
-| `exit_code` | integer | One of 0, 1, or 2. |
-| `raw_top_score` | number/null | Highest raw engine score. |
-| `raw_runner_up` | number/null | Second-highest raw engine score. |
-| `margin_raw` | number/null | Difference between top and runner-up. |
-| `calibrated_probability` | number/null | Null until fitted calibration exists. |
-| `margin_calibrated` | number/null | Null until fitted calibration exists. |
-| `calibration_version` | string | Calibration identifier, or `none`. |
-| `coverage_policy` | string | `always_abstain_v0` or `calibrated`. |
-| `results` | array[object] | Descending score order, capped at `top_n`. |
-| `elapsed_ms` | object | Numeric `total`, `pregate`, `engine`, and `overhead`. |
-| `escalation_reason` | string/null | `margin_below_tau`, `long_candidates`, `n_gt_local_cap`, or null. |
-| `error_kind` | string/null | Error taxonomy value or null. |
-| `notes` | array[string] | Human-readable notes without secrets. |
+Shape A adds:
 
-Each result object contains:
+| Field | Meaning |
+|---|---|
+| `question_id` | Question identifier from typed request |
+| `kind` | `choice`, `noul`, or `score` |
+| `confidence` | Top probability after calibration transform |
+| `probabilities` | Mapping of option id to probability |
+| `margin` | Top minus runner-up probability |
+| `noul` | `{ "true": p, "false": p }` for noul requests |
+| `score` | Expected 1-based score for score requests |
+
+## Shape A example (`choice`)
 
 ```json
 {
-  "id": "c3",
-  "index": 3,
-  "relevance_score": 0.92933786
+  "schema": "eljev.decision/1",
+  "decision_id": "uuid4",
+  "ts": "2026-09-30T15:06:12.000Z",
+  "shape": "decide",
+  "question_id": "route-task",
+  "kind": "choice",
+  "tier_path": ["systemone", "cohere"],
+  "engine": "cohere-rerank-v4.0-pro",
+  "choice": "review_audit",
+  "choice_index": 1,
+  "confidence": 0.698,
+  "margin": 0.581,
+  "probabilities": {
+    "review_audit": 0.698,
+    "investigation_search": 0.117,
+    "code_modification": 0.086,
+    "execution_testing": 0.062,
+    "advisory_explanation": 0.037
+  },
+  "raw_top_score": 0.91,
+  "raw_runner_up": 0.84,
+  "margin_raw": 0.07,
+  "calibrated_probability": 0.698,
+  "margin_calibrated": 0.581,
+  "status": "needs_review",
+  "exit_code": 2,
+  "error_kind": null,
+  "notes": []
 }
 ```
 
-`index` always refers to the original input order. Results are sorted by
-`relevance_score` descending. Every numeric field is a JSON number or null;
-never emit `NaN` or `Infinity`.
+## Status and exit behavior
 
-## Status values
+| Status | Exit | Meaning |
+|---|---:|---|
+| `selected` | 0 | Calibrated gate passed |
+| `needs_review` | 2 | Advisory outcome |
+| `abstain_tie` | 2 | Exact tie |
+| `trivial` | 2 | Pregate short-circuit |
+| `engine_error` | 2 | Remote failure (advisory) |
+| `invalid_response` | 2 | Malformed engine output (fail closed) |
+| `invalid_input` | 1 | Contract/input validation failure |
 
-| Status | Meaning | Exit |
-|---|---|---:|
-| `selected` | Above a fitted threshold and safe for host policy | 0 |
-| `trivial` | Pregate short-circuited; no model ran | 2 |
-| `needs_review` | Ranked, but coverage policy forbids auto-action | 2 |
-| `abstain_tie` | Top two scores are exactly equal | 2 |
-| `invalid_response` | Engine returned malformed output; fail closed | 2 |
-| `engine_error` | Transport, authentication, timeout, or quota failure; fail open | 2 |
+Default policy `always_abstain_v0` keeps non-trivial outcomes advisory until calibrated mode is enabled with valid per-kind calibration.
 
-## Exit codes
-
-| Code | Meaning |
-|---:|---|
-| 0 | Selected; impossible in v0 unless calibrated policy is fitted and enabled |
-| 1 | Input validation failure, including bad JSON, cap breach, duplicate ID, or empty text |
-| 2 | Needs review, trivial, tie, malformed engine response, or provider failure |
-
-Validate input before calling the engine. Wrap only the engine call in the
-fail-open handler. Provider failures must never become exit code 1.
-
-## Error taxonomy
-
-`auth`, `timeout`, `http`, `dns`, `tls`, `connection`, `malformed`,
-`rate_limited`, `daemon_unavailable`, `daemon_starting`,
-`daemon_version_mismatch`, or `null`.
-
-## Coverage policy
-
-`always_abstain_v0` is the default and returns exit code 2 for every
-non-trivial decision. The ranking and diagnostics are still returned.
-
-`calibrated` requires a valid `eval/calibration.json` produced from the user's
-labelled data. Ties abstain under both policies. No raw score threshold is
-valid until calibration and a held-out selective-risk evaluation establish
-one.

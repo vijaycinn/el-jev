@@ -109,7 +109,7 @@ def _request(
     ).encode("utf-8")
     request = (
         f"{method} {path} HTTP/1.1\r\n"
-        f"Host: {host}:{port}\r\n"
+        f"Host: {DEFAULT_HOST}:{port}\r\n"
         "Accept: application/json\r\n"
         "Connection: close\r\n"
         + ("Content-Type: application/json\r\n" if payload is not None else "")
@@ -213,7 +213,7 @@ def _validate_decide(state: object, question: object) -> tuple[str, dict[str, ob
     if not isinstance(state, (str, dict, list)) or (isinstance(state, str) and not state.strip()):
         from .validate import InputValidationError
 
-        raise InputValidationError("state must be a non-empty string or JSON object", field="state")
+        raise InputValidationError("state must be a non-empty string or JSON object/list", field="state")
     if not isinstance(question, dict):
         from .validate import InputValidationError
 
@@ -228,14 +228,33 @@ def _validate_decide(state: object, question: object) -> tuple[str, dict[str, ob
         from .validate import InputValidationError
 
         raise InputValidationError("question.kind must be choice, noul, or score", field="question")
-    if question_kind == "choice" and not isinstance(question.get("options"), list) and not isinstance(question.get("criteria"), dict):
-        from .validate import InputValidationError
+    if question_kind == "choice":
+        options = question.get("options")
+        criteria = question.get("criteria")
+        if isinstance(options, list):
+            if not options:
+                from .validate import InputValidationError
 
-        raise InputValidationError("choice questions must contain an options list or criteria mapping", field="question")
-    if question_kind == "score" and not isinstance(question.get("criteria"), list):
-        from .validate import InputValidationError
+                raise InputValidationError("choice questions must provide at least one option", field="question")
+        elif isinstance(criteria, dict):
+            if not criteria:
+                from .validate import InputValidationError
 
-        raise InputValidationError("score questions must contain a criteria list", field="question")
+                raise InputValidationError("choice criteria mapping must not be empty", field="question")
+        else:
+            from .validate import InputValidationError
+
+            raise InputValidationError("choice questions must contain an options list or criteria mapping", field="question")
+    if question_kind == "score":
+        criteria = question.get("criteria")
+        if not isinstance(criteria, list):
+            from .validate import InputValidationError
+
+            raise InputValidationError("score questions must contain a criteria list", field="question")
+        if not 2 <= len(criteria) <= 10:
+            from .validate import InputValidationError
+
+            raise InputValidationError("score criteria list must contain 2-10 items", field="question")
     return state, question
 
 
@@ -396,6 +415,31 @@ class EljevClient:
             return {"records": []}
         except Exception as exc:
             return {"error": str(exc), "records": []}
+
+    def shutdown(self) -> dict[str, object]:
+        try:
+            status, body = self._call("POST", "/v1/shutdown", {})
+        except TransportError as exc:
+            return {
+                "status": "down",
+                "error_kind": exc.error_kind,
+                "notes": [
+                    START_DAEMON_NOTE
+                    if exc.error_kind == "daemon_unavailable"
+                    else str(exc)
+                ],
+            }
+        except ResponseError as exc:
+            return {"status": "down", "error_kind": exc.error_kind, "notes": [str(exc)]}
+        if status != 200:
+            return {
+                "status": "down",
+                "error_kind": "http",
+                "notes": [f"daemon returned HTTP {status}"],
+            }
+        if not isinstance(body, dict):
+            return {"status": "down", "error_kind": "malformed", "notes": ["shutdown response was not an object"]}
+        return body
 
 
 Client = EljevClient

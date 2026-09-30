@@ -47,7 +47,6 @@ foreach ($entry in @($manifest.files)) {
 }
 
 $directories = @(
-    (Join-Path $CopilotHome "hooks\eljev"),
     (Join-Path $CopilotHome "skills\el-jev")
 )
 foreach ($directory in $directories) {
@@ -68,3 +67,4 @@ if ($Apply) {
 } else {
     Write-Host "No files were changed. Re-run with -Apply to apply the printed removals."
 }
+Write-Host "To remove the Copilot hook, run: python -m eljev uninstall-hook --scope user"

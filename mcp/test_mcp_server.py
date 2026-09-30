@@ -87,6 +87,7 @@ class McpServerTests(unittest.TestCase):
         )
         self.assertIn("result", initialized)
         self.assertEqual(initialized["result"]["protocolVersion"], "2025-06-18")
+        self.assertEqual(initialized["result"]["serverInfo"]["version"], "0.2.0")
 
         tools = self.server.request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tool_names = {tool["name"] for tool in tools["result"]["tools"]}
@@ -112,6 +113,42 @@ class McpServerTests(unittest.TestCase):
         self.assertIsNone(shutdown["result"])
         self.server.notify({"jsonrpc": "2.0", "method": "exit"})
         self.server.process.wait(timeout=5)
+
+    def test_decide_score_arguments_are_accepted(self) -> None:
+        self.server.request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"},
+                },
+            }
+        )
+        decide = self.server.request(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "eljev_decide",
+                    "arguments": {
+                        "state": {"prompt": "Production checkout outage"},
+                        "question": {
+                            "id": "severity",
+                            "kind": "score",
+                            "criteria": ["low", "medium", "critical"],
+                        },
+                    },
+                },
+            }
+        )
+        self.assertNotIn("error", decide)
+        self.assertTrue(decide["result"]["isError"])
+        self.assertEqual(decide["result"]["structuredContent"]["shape"], "decide")
+        self.assertEqual(decide["result"]["structuredContent"]["error_kind"], "daemon_unavailable")
 
 
 if __name__ == "__main__":

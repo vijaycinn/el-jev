@@ -5158,19 +5158,19 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <!-- Boundaries (behind everything) -->
         <rect data-graph-role="structural-frame" data-composition-frame-kind="security-group" data-composition-frame-id="0" data-composition-frame-label="Developer Workstation (Windows / macOS / Linux)" x="10" y="80" width="840" height="420" rx="8" class="c-security-group" stroke-width="1"/>
 
-        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="1" data-composition-frame-label="Azure AI Foundry Cloud Environment" x="430" y="80" width="900" height="260" rx="12" class="c-region" stroke-width="1"/>
+        <rect data-graph-role="structural-frame" data-composition-frame-kind="region" data-composition-frame-id="1" data-composition-frame-label="Azure AI Foundry Cloud Environment" x="880" y="80" width="450" height="260" rx="12" class="c-region" stroke-width="1"/>
 
         <!-- Connection paths (before components for correct z-order) -->
         <path data-edge-from="user" data-edge-to="hook" data-edge-label="prompt" data-edge-key="0" data-edge-id="prompt-in" data-composition-points="170,290;240,290" d="M 170 290 L 240 290" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="switch" data-edge-to="hook" data-edge-label="checks state" data-edge-key="1" data-edge-id="check-switch" data-composition-points="105,170;105,215;315,215;315,260" d="M 105 170 L 105 207 Q 105 215 113 215 L 307 215 Q 315 215 315 223 L 315 260" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="hook" data-edge-to="daemon" data-edge-label="HTTP :8787" data-edge-key="2" data-edge-id="hook-to-daemon" data-composition-points="390,290;460,290" d="M 390 290 L 460 290" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
         <path data-edge-from="daemon" data-edge-to="engine" data-edge-label="route" data-edge-key="3" data-edge-id="daemon-to-engine" data-composition-points="600,290;670,290" d="M 600 290 L 670 290" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="engine" data-edge-to="entra" data-edge-label="mint token" data-edge-key="4" data-edge-id="get-token" data-composition-points="745,260;745,215;535,215;535,170" d="M 745 260 L 745 223 Q 745 215 737 215 L 543 215 Q 535 215 535 207 L 535 170" class="a-security" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
-        <path data-edge-from="entra" data-edge-to="rbac" data-edge-label="verifies role" data-edge-key="5" data-edge-id="entra-to-rbac" data-composition-points="610,140;680,140" d="M 610 140 L 680 140" class="a-security" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="engine" data-edge-to="entra" data-edge-label="mint token" data-edge-key="4" data-edge-id="get-token" data-composition-points="745,260;745,215;990,215;990,170" d="M 745 260 L 745 223 Q 745 215 753 215 L 982 215 Q 990 215 990 207 L 990 170" class="a-security" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
+        <path data-edge-from="entra" data-edge-to="rbac" data-edge-label="verifies role" data-edge-key="5" data-edge-id="entra-to-rbac" data-composition-points="1070,140;1140,140" d="M 1070 140 L 1140 140" class="a-security" stroke-width="1.5" marker-end="url(#arrowhead-security)"/>
         <path data-edge-from="engine" data-edge-to="foundry" data-edge-label="HTTPS TLS" data-edge-key="6" data-edge-id="engine-to-foundry" data-composition-points="820,290;910,290" d="M 820 290 L 910 290" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
         <path data-edge-from="foundry" data-edge-to="cohere" data-edge-label="rerank" data-edge-key="7" data-edge-id="foundry-to-cohere" data-composition-points="1070,290;1140,290" d="M 1070 290 L 1140 290" class="a-default" stroke-width="1.5" marker-end="url(#arrowhead)"/>
-        <path data-edge-from="hook" data-edge-to="copilot_llm" data-edge-label="injected verdict" data-edge-key="8" data-edge-id="inject-context" data-composition-points="315,320;315,420" d="M 315 320 L 315 420" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
-        <path data-edge-from="copilot_llm" data-edge-to="user" data-edge-label="instant action" data-edge-key="9" data-edge-id="ready-action" data-composition-points="240,450;105,450;105,320" d="M 240 450 L 113 450 Q 105 450 105 442 L 105 320" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
+        <path data-edge-from="hook" data-edge-to="copilot_llm" data-edge-label="advisory block" data-edge-key="8" data-edge-id="inject-context" data-composition-points="315,320;315,420" d="M 315 320 L 315 420" class="a-emphasis" stroke-width="1.8" marker-end="url(#arrowhead-emphasis)"/>
+        <path data-edge-from="copilot_llm" data-edge-to="user" data-edge-label="act or reason" data-edge-key="9" data-edge-id="ready-action" data-composition-points="240,450;105,450;105,320" d="M 240 450 L 113 450 Q 105 450 105 442 L 105 320" class="a-dashed" stroke-width="1.5" marker-end="url(#arrowhead-dashed)"/>
 
         <!-- Components -->
         <g id="node-user" data-node-id="user" data-node-label="Developer" tabindex="0" role="button" aria-label="Focus Developer, Copilot CLI Prompt, Developer Workstation (Windows / macOS / Linux)" aria-pressed="false" data-node-kind="external" data-node-sublabel="Copilot CLI Prompt" data-node-context="Developer Workstation (Windows / macOS / Linux)">
@@ -5198,8 +5198,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         <text data-detail="fine" x="105" y="162" class="t-security" font-size="7" text-anchor="middle">Account Env</text>
         </g>
 
-        <g id="node-hook" data-node-id="hook" data-node-label="Pre-Turn Hook" tabindex="0" role="button" aria-label="Focus Pre-Turn Hook, userPromptTransformed, Developer Workstation (Windows / macOS / Linux)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="userPromptTransformed" data-node-tag="&lt; 5ms check" data-node-context="Developer Workstation (Windows / macOS / Linux)">
-          <title>Pre-Turn Hook · userPromptTransformed · Developer Workstation (Windows / macOS / Linux) · &lt; 5ms check</title>
+        <g id="node-hook" data-node-id="hook" data-node-label="Pre-Turn Hook" tabindex="0" role="button" aria-label="Focus Pre-Turn Hook, userPromptTransformed, Developer Workstation (Windows / macOS / Linux)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="userPromptTransformed" data-node-tag="500 ms, fail-open" data-node-context="Developer Workstation (Windows / macOS / Linux)">
+          <title>Pre-Turn Hook · userPromptTransformed · Developer Workstation (Windows / macOS / Linux) · 500 ms, fail-open</title>
           <rect x="240" y="260" width="150" height="60" rx="6" class="c-mask"/>
           <rect x="240" y="260" width="150" height="60" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(246 266) scale(0.6875)">
@@ -5207,11 +5207,11 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           </g>
           <text data-node-label="" data-detail-anchor="" x="315" y="288" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Pre-Turn Hook</text>
         <text data-detail="context" x="315" y="304" class="t-muted" font-size="9" text-anchor="middle">userPromptTransformed</text>
-        <text data-detail="fine" x="315" y="312" class="t-backend" font-size="7" text-anchor="middle">&lt; 5ms check</text>
+        <text data-detail="fine" x="315" y="312" class="t-backend" font-size="7" text-anchor="middle">500 ms, fail-open</text>
         </g>
 
-        <g id="node-copilot_llm" data-node-id="copilot_llm" data-node-label="Copilot LLM" tabindex="0" role="button" aria-label="Focus Copilot LLM, Injected Context, Developer Workstation (Windows / macOS / Linux)" aria-pressed="false" data-node-kind="external" data-node-sublabel="Injected Context" data-node-tag="Acts on Verdict" data-node-context="Developer Workstation (Windows / macOS / Linux)">
-          <title>Copilot LLM · Injected Context · Developer Workstation (Windows / macOS / Linux) · Acts on Verdict</title>
+        <g id="node-copilot_llm" data-node-id="copilot_llm" data-node-label="Copilot LLM" tabindex="0" role="button" aria-label="Focus Copilot LLM, Injected Advisory, Developer Workstation (Windows / macOS / Linux)" aria-pressed="false" data-node-kind="external" data-node-sublabel="Injected Advisory" data-node-tag="Acts or Reasons" data-node-context="Developer Workstation (Windows / macOS / Linux)">
+          <title>Copilot LLM · Injected Advisory · Developer Workstation (Windows / macOS / Linux) · Acts or Reasons</title>
           <rect x="240" y="420" width="150" height="60" rx="6" class="c-mask"/>
           <rect x="240" y="420" width="150" height="60" rx="6" class="c-external" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="external" class="semantic-sigil s-external" transform="translate(246 426) scale(0.6875)">
@@ -5219,12 +5219,12 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
             <path d="M8 2.5h5.5V8M13.5 2.5 7.5 8.5"/>
           </g>
           <text data-node-label="" data-detail-anchor="" x="315" y="448" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Copilot LLM</text>
-        <text data-detail="context" x="315" y="464" class="t-muted" font-size="9" text-anchor="middle">Injected Context</text>
-        <text data-detail="fine" x="315" y="472" class="t-external" font-size="7" text-anchor="middle">Acts on Verdict</text>
+        <text data-detail="context" x="315" y="464" class="t-muted" font-size="9" text-anchor="middle">Injected Advisory</text>
+        <text data-detail="fine" x="315" y="472" class="t-external" font-size="7" text-anchor="middle">Acts or Reasons</text>
         </g>
 
-        <g id="node-daemon" data-node-id="daemon" data-node-label="el-jev Daemon" tabindex="0" role="button" aria-label="Focus el-jev Daemon, 127.0.0.1:8787, Developer Workstation (Windows / macOS / Linux)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="127.0.0.1:8787" data-node-tag="Warm Process" data-node-context="Developer Workstation (Windows / macOS / Linux)">
-          <title>el-jev Daemon · 127.0.0.1:8787 · Developer Workstation (Windows / macOS / Linux) · Warm Process</title>
+        <g id="node-daemon" data-node-id="daemon" data-node-label="el-jev Daemon" tabindex="0" role="button" aria-label="Focus el-jev Daemon, 127.0.0.1:8787, Developer Workstation (Windows / macOS / Linux)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="127.0.0.1:8787" data-node-tag="Warm token + TLS" data-node-context="Developer Workstation (Windows / macOS / Linux)">
+          <title>el-jev Daemon · 127.0.0.1:8787 · Developer Workstation (Windows / macOS / Linux) · Warm token + TLS</title>
           <rect x="460" y="260" width="140" height="60" rx="6" class="c-mask"/>
           <rect x="460" y="260" width="140" height="60" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(466 266) scale(0.6875)">
@@ -5232,44 +5232,45 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           </g>
           <text data-node-label="" data-detail-anchor="" x="530" y="288" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">el-jev Daemon</text>
         <text data-detail="context" x="530" y="304" class="t-muted" font-size="9" text-anchor="middle">127.0.0.1:8787</text>
-        <text data-detail="fine" x="530" y="312" class="t-backend" font-size="7" text-anchor="middle">Warm Process</text>
+        <text data-detail="fine" x="530" y="312" class="t-backend" font-size="7" text-anchor="middle">Warm token + TLS</text>
         </g>
 
-        <g id="node-engine" data-node-id="engine" data-node-label="System One Core" tabindex="0" role="button" aria-label="Focus System One Core, Choice, Noul, Score, Developer Workstation (Windows / macOS / Linux)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="Choice, Noul, Score" data-node-context="Developer Workstation (Windows / macOS / Linux)">
-          <title>System One Core · Choice, Noul, Score · Developer Workstation (Windows / macOS / Linux)</title>
+        <g id="node-engine" data-node-id="engine" data-node-label="Decision Core" tabindex="0" role="button" aria-label="Focus Decision Core, Choice, Noul, Score, Developer Workstation (Windows / macOS / Linux)" aria-pressed="false" data-node-kind="backend" data-node-sublabel="Choice, Noul, Score" data-node-tag="Single Dual Gate" data-node-context="Developer Workstation (Windows / macOS / Linux)">
+          <title>Decision Core · Choice, Noul, Score · Developer Workstation (Windows / macOS / Linux) · Single Dual Gate</title>
           <rect x="670" y="260" width="150" height="60" rx="6" class="c-mask"/>
           <rect x="670" y="260" width="150" height="60" rx="6" class="c-backend" stroke-width="1.5"/>
           <g aria-hidden="true" data-semantic-sigil="backend" class="semantic-sigil s-backend" transform="translate(676 266) scale(0.6875)">
             <path d="M6 3 3 8l3 5M10 3l3 5-3 5"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="745" y="288" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">System One Core</text>
+          <text data-node-label="" data-detail-anchor="" x="745" y="288" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Decision Core</text>
         <text data-detail="context" x="745" y="304" class="t-muted" font-size="9" text-anchor="middle">Choice, Noul, Score</text>
+        <text data-detail="fine" x="745" y="312" class="t-backend" font-size="7" text-anchor="middle">Single Dual Gate</text>
         </g>
 
         <g id="node-entra" data-node-id="entra" data-node-label="Microsoft Entra ID" tabindex="0" role="button" aria-label="Focus Microsoft Entra ID, scope: ai.azure.com, Azure AI Foundry Cloud Environment" aria-pressed="false" data-node-kind="security" data-node-sublabel="scope: ai.azure.com" data-node-tag="Zero API Keys" data-node-context="Azure AI Foundry Cloud Environment">
           <title>Microsoft Entra ID · scope: ai.azure.com · Azure AI Foundry Cloud Environment · Zero API Keys</title>
-          <rect x="460" y="110" width="150" height="60" rx="6" class="c-mask"/>
-          <rect x="460" y="110" width="150" height="60" rx="6" class="c-security" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(466 116) scale(0.6875)">
+          <rect x="910" y="110" width="160" height="60" rx="6" class="c-mask"/>
+          <rect x="910" y="110" width="160" height="60" rx="6" class="c-security" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(916 116) scale(0.6875)">
             <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="535" y="138" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Microsoft Entra ID</text>
-        <text data-detail="context" x="535" y="154" class="t-muted" font-size="9" text-anchor="middle">scope: ai.azure.com</text>
-        <text data-detail="fine" x="535" y="162" class="t-security" font-size="7" text-anchor="middle">Zero API Keys</text>
+          <text data-node-label="" data-detail-anchor="" x="990" y="138" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">Microsoft Entra ID</text>
+        <text data-detail="context" x="990" y="154" class="t-muted" font-size="9" text-anchor="middle">scope: ai.azure.com</text>
+        <text data-detail="fine" x="990" y="162" class="t-security" font-size="7" text-anchor="middle">Zero API Keys</text>
         </g>
 
         <g id="node-rbac" data-node-id="rbac" data-node-label="RBAC Role Gate" tabindex="0" role="button" aria-label="Focus RBAC Role Gate, Cognitive Services User, Azure AI Foundry Cloud Environment" aria-pressed="false" data-node-kind="security" data-node-sublabel="Cognitive Services User" data-node-tag="Managed Identity" data-node-context="Azure AI Foundry Cloud Environment">
           <title>RBAC Role Gate · Cognitive Services User · Azure AI Foundry Cloud Environment · Managed Identity</title>
-          <rect x="680" y="110" width="160" height="60" rx="6" class="c-mask"/>
-          <rect x="680" y="110" width="160" height="60" rx="6" class="c-security" stroke-width="1.5"/>
-          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(686 116) scale(0.6875)">
+          <rect x="1140" y="110" width="160" height="60" rx="6" class="c-mask"/>
+          <rect x="1140" y="110" width="160" height="60" rx="6" class="c-security" stroke-width="1.5"/>
+          <g aria-hidden="true" data-semantic-sigil="security" class="semantic-sigil s-security" transform="translate(1146 116) scale(0.6875)">
             <path d="M8 2.2 13 4v3.5c0 3.1-1.8 5.4-5 6.5-3.2-1.1-5-3.4-5-6.5V4Z"/>
             <path d="m5.8 8 1.5 1.5 3-3"/>
           </g>
-          <text data-node-label="" data-detail-anchor="" x="760" y="138" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">RBAC Role Gate</text>
-        <text data-detail="context" x="760" y="154" class="t-muted" font-size="9" text-anchor="middle">Cognitive Services User</text>
-        <text data-detail="fine" x="760" y="162" class="t-security" font-size="7" text-anchor="middle">Managed Identity</text>
+          <text data-node-label="" data-detail-anchor="" x="1220" y="138" class="t-primary" font-size="11" font-weight="600" text-anchor="middle">RBAC Role Gate</text>
+        <text data-detail="context" x="1220" y="154" class="t-muted" font-size="9" text-anchor="middle">Cognitive Services User</text>
+        <text data-detail="fine" x="1220" y="162" class="t-security" font-size="7" text-anchor="middle">Managed Identity</text>
         </g>
 
         <g id="node-foundry" data-node-id="foundry" data-node-label="AI Services Gateway" tabindex="0" role="button" aria-label="Focus AI Services Gateway, services.ai.azure.com, Azure AI Foundry Cloud Environment" aria-pressed="false" data-node-kind="cloud" data-node-sublabel="services.ai.azure.com" data-node-context="Azure AI Foundry Cloud Environment">
@@ -5313,12 +5314,12 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <text x="635" y="280" class="t-muted" font-size="8" text-anchor="middle">route</text>
         </g>
         <g data-detail="context" data-edge-from="engine" data-edge-to="entra" data-edge-label="mint token" data-edge-key="4" data-edge-id="get-token">
-          <rect x="611" y="195" width="58" height="14" rx="3" class="c-mask"/>
-          <text x="640" y="205" class="t-security" font-size="8" text-anchor="middle">mint token</text>
+          <rect x="838.5" y="195" width="58" height="14" rx="3" class="c-mask"/>
+          <text x="867.5" y="205" class="t-security" font-size="8" text-anchor="middle">mint token</text>
         </g>
         <g data-detail="context" data-edge-from="entra" data-edge-to="rbac" data-edge-label="verifies role" data-edge-key="5" data-edge-id="entra-to-rbac">
-          <rect x="608.8" y="120" width="72.4" height="14" rx="3" class="c-mask"/>
-          <text x="645" y="130" class="t-security" font-size="8" text-anchor="middle">verifies role</text>
+          <rect x="1068.8" y="120" width="72.4" height="14" rx="3" class="c-mask"/>
+          <text x="1105" y="130" class="t-security" font-size="8" text-anchor="middle">verifies role</text>
         </g>
         <g data-detail="context" data-edge-from="engine" data-edge-to="foundry" data-edge-label="HTTPS TLS" data-edge-key="6" data-edge-id="engine-to-foundry">
           <rect x="838.4" y="270" width="53.199999999999996" height="14" rx="3" class="c-mask"/>
@@ -5328,13 +5329,13 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <rect x="1085.6" y="270" width="38.8" height="14" rx="3" class="c-mask"/>
           <text x="1105" y="280" class="t-muted" font-size="8" text-anchor="middle">rerank</text>
         </g>
-        <g data-detail="context" data-edge-from="hook" data-edge-to="copilot_llm" data-edge-label="injected verdict" data-edge-key="8" data-edge-id="inject-context">
-          <rect x="271.6" y="324" width="86.8" height="14" rx="3" class="c-mask"/>
-          <text x="315" y="334" class="t-backend" font-size="8" text-anchor="middle">injected verdict</text>
+        <g data-detail="context" data-edge-from="hook" data-edge-to="copilot_llm" data-edge-label="advisory block" data-edge-key="8" data-edge-id="inject-context">
+          <rect x="276.4" y="324" width="77.2" height="14" rx="3" class="c-mask"/>
+          <text x="315" y="334" class="t-backend" font-size="8" text-anchor="middle">advisory block</text>
         </g>
-        <g data-detail="context" data-edge-from="copilot_llm" data-edge-to="user" data-edge-label="instant action" data-edge-key="9" data-edge-id="ready-action">
-          <rect x="66.4" y="365" width="77.2" height="14" rx="3" class="c-mask"/>
-          <text x="105" y="375" class="t-messagebus" font-size="8" text-anchor="middle">instant action</text>
+        <g data-detail="context" data-edge-from="copilot_llm" data-edge-to="user" data-edge-label="act or reason" data-edge-key="9" data-edge-id="ready-action">
+          <rect x="68.8" y="365" width="72.4" height="14" rx="3" class="c-mask"/>
+          <text x="105" y="375" class="t-messagebus" font-size="8" text-anchor="middle">act or reason</text>
         </g>
 
         <!-- Boundary labels (foreground masks keep routes out of titles) -->
@@ -5344,8 +5345,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </g>
 
         <g data-graph-role="structural-frame-label" data-composition-frame-id="1" data-composition-frame-kind="region" data-composition-frame-label="Azure AI Foundry Cloud Environment">
-          <rect data-graph-role="structural-frame-label-mask" x="434" y="90" width="193.6" height="16" rx="3" class="c-mask"/>
-          <text data-boundary-label="" x="438" y="103" class="t-cloud" font-size="9" font-weight="600">Azure AI Foundry Cloud Environment</text>
+          <rect data-graph-role="structural-frame-label-mask" x="884" y="90" width="193.6" height="16" rx="3" class="c-mask"/>
+          <text data-boundary-label="" x="888" y="103" class="t-cloud" font-size="9" font-weight="600">Azure AI Foundry Cloud Environment</text>
         </g>
 
         <!-- Legend -->
@@ -5560,21 +5561,21 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Local Speed Path</h3>
         </div>
         <ul>
-          <li>&bull; Pre-turn hook intercepts prompt in &lt; 5ms</li>
-          <li>&bull; Resident warm daemon keeps TLS session alive</li>
-          <li>&bull; Zero LLM multi-turn token latency for classification</li>
+          <li>&bull; Hook has a 500 ms budget and fails open on any error</li>
+          <li>&bull; Daemon pre-mints the Entra token and keeps TLS warm</li>
+          <li>&bull; Daemon down: hook spawns it once and lets the turn proceed</li>
         </ul>
       </div>
 
       <div class="card">
         <div class="card-header">
           <div class="card-dot emerald"></div>
-          <h3>TypeSafe Decisioning</h3>
+          <h3>Typed Decisioning</h3>
         </div>
         <ul>
-          <li>&bull; Choice: routes prompt to target intent with probabilities</li>
-          <li>&bull; Noul: evaluates binary safety/policy gates in &lt; 200ms</li>
-          <li>&bull; Score: rates urgency and risk along ordinal criteria</li>
+          <li>&bull; Choice, Noul and Score over Cohere rerank + softmax</li>
+          <li>&bull; One Dual Gate; thresholds come from fitted calibration</li>
+          <li>&bull; Default policy abstains: every verdict is advisory (exit 2)</li>
         </ul>
       </div>
 
@@ -5584,9 +5585,9 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Enterprise Security &amp; RBAC</h3>
         </div>
         <ul>
-          <li>&bull; Keyless auth via Entra ID (scope: https://ai.azure.com/.default)</li>
-          <li>&bull; Requires Cognitive Services User role on resource</li>
-          <li>&bull; Attachable to Azure Managed Identity in pipelines</li>
+          <li>&bull; Keyless Entra ID via az CLI or Managed Identity</li>
+          <li>&bull; Requires Cognitive Services User on the Foundry resource</li>
+          <li>&bull; Loopback only; rejects browser Origin and foreign Host</li>
         </ul>
       </div>
     </div>

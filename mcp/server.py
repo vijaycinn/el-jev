@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 
 SCHEMA = "eljev.decision/1"
 SERVER_NAME = "eljev"
-SERVER_VERSION = "0.1.0"
+SERVER_VERSION = "0.2.0"
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 SUPPORTED_PROTOCOL_VERSIONS = {
     "2024-11-05",
@@ -195,7 +195,10 @@ def _classify_transport_error(error: BaseException) -> str:
 def _request_json(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
     url = _daemon_base_url() + path
     data = None
-    headers = {"Accept": "application/json"}
+    headers = {
+        "Accept": "application/json",
+        "Host": f"{DEFAULT_HOST}:{os.environ.get('ELJEV_PORT', str(DEFAULT_PORT))}",
+    }
     if payload is not None:
         data = _json_response(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -317,36 +320,72 @@ def _validate_screen_arguments(arguments: Any) -> dict[str, Any]:
 def _validate_decide_arguments(arguments: Any) -> dict[str, Any]:
     args = _require_object(arguments, "arguments")
     _reject_unknown_keys(args, {"state", "question"}, "arguments")
-    state = _require_nonempty_string(args.get("state"), "state")
-    question = _require_object(args.get("question"), "question")
-    _reject_unknown_keys(question, {"id", "kind", "options"}, "question")
-    question_id = _require_nonempty_string(question.get("id"), "question.id")
-    kind = question.get("kind")
-    if kind not in {"choice", "noul"}:
-        raise InputValidationError("question.kind must be one of choice or noul.")
+    state = args.get("state")
+    if isinstance(state, str):
+        if not state.strip():
+            raise InputValidationError("state must be non-empty when provided as a string.")
+    elif not isinstance(state, (dict, list)):
+        raise InputValidationError("state must be a non-empty string or an object/array.")
 
-    options = question.get("options", [])
-    if not isinstance(options, list):
-        raise InputValidationError("question.options must be an array.")
-    option_ids: set[str] = set()
+    question = _require_object(args.get("question"), "question")
+    _reject_unknown_keys(question, {"id", "kind", "options", "criteria", "instructions"}, "question")
+    question_id = _require_nonempty_string(question.get("id"), "question.id")
+    kind = str(question.get("kind", "")).strip().lower()
+    if kind not in {"choice", "noul", "score"}:
+        raise InputValidationError("question.kind must be one of choice, noul, or score.")
+
+    options = question.get("options")
+    criteria = question.get("criteria")
     normalized_options: list[dict[str, str]] = []
-    for position, option in enumerate(options):
-        item = _require_object(option, f"question.options[{position}]")
-        _reject_unknown_keys(item, {"id", "description"}, f"question.options[{position}]")
-        option_id = _require_nonempty_string(item.get("id"), f"question.options[{position}].id")
-        description = _require_nonempty_string(
-            item.get("description"), f"question.options[{position}].description"
-        )
-        if option_id in option_ids:
-            raise InputValidationError(f"duplicate option id: {option_id}")
-        option_ids.add(option_id)
-        normalized_options.append({"id": option_id, "description": description})
-    if kind == "choice" and not normalized_options:
-        raise InputValidationError("choice questions require at least one option.")
+    normalized_criteria: Any = criteria
+
+    if options is not None and not isinstance(options, list):
+        raise InputValidationError("question.options must be an array when provided.")
+    option_ids: set[str] = set()
+    if isinstance(options, list):
+        for position, option in enumerate(options):
+            item = _require_object(option, f"question.options[{position}]")
+            _reject_unknown_keys(item, {"id", "description"}, f"question.options[{position}]")
+            option_id = _require_nonempty_string(item.get("id"), f"question.options[{position}].id")
+            description = _require_nonempty_string(
+                item.get("description"), f"question.options[{position}].description"
+            )
+            if option_id in option_ids:
+                raise InputValidationError(f"duplicate option id: {option_id}")
+            option_ids.add(option_id)
+            normalized_options.append({"id": option_id, "description": description})
+
+    if kind == "choice":
+        if normalized_options:
+            normalized_criteria = None
+        else:
+            if not isinstance(criteria, dict) or not criteria:
+                raise InputValidationError("choice questions require options[] or criteria mapping.")
+            cleaned: dict[str, str] = {}
+            for key, value in criteria.items():
+                option_id = _require_nonempty_string(key, "question.criteria key")
+                description = _require_nonempty_string(value, f"question.criteria[{option_id}]")
+                cleaned[option_id] = description
+            normalized_criteria = cleaned
+    elif kind == "score":
+        if not isinstance(criteria, list):
+            raise InputValidationError("score questions require criteria list.")
+        if not 2 <= len(criteria) <= 10:
+            raise InputValidationError("score criteria must contain 2-10 items.")
+        normalized_criteria = [_require_nonempty_string(item, f"question.criteria[{idx}]") for idx, item in enumerate(criteria)]
+    else:
+        if criteria is not None and not isinstance(criteria, dict):
+            raise InputValidationError("noul criteria must be an object when provided.")
 
     return {
         "state": state,
-        "question": {"id": question_id, "kind": kind, "options": normalized_options},
+        "question": {
+            "id": question_id,
+            "kind": kind,
+            "instructions": question.get("instructions"),
+            "options": normalized_options if normalized_options else None,
+            "criteria": normalized_criteria,
+        },
     }
 
 
@@ -454,21 +493,62 @@ def _decide_schema() -> dict[str, Any]:
         "additionalProperties": False,
         "required": ["state", "question"],
         "properties": {
-            "state": {"type": "string", "minLength": 1, "pattern": r"[\s\S]*\S[\s\S]*"},
+            "state": {
+                "oneOf": [
+                    {"type": "string", "minLength": 1, "pattern": r"[\s\S]*\S[\s\S]*"},
+                    {"type": "object"},
+                    {"type": "array"},
+                ]
+            },
             "question": {
                 "type": "object",
                 "additionalProperties": False,
                 "required": ["id", "kind"],
                 "properties": {
                     "id": {"type": "string", "minLength": 1, "pattern": r"[\s\S]*\S[\s\S]*"},
-                    "kind": {"type": "string", "enum": ["choice", "noul"]},
+                    "kind": {"type": "string", "enum": ["choice", "noul", "score"]},
+                    "instructions": {"type": "string"},
                     "options": {"type": "array", "items": option_schema},
+                    "criteria": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "additionalProperties": {"type": "string", "minLength": 1},
+                                "minProperties": 1,
+                            },
+                            {
+                                "type": "array",
+                                "items": {"type": "string", "minLength": 1},
+                                "minItems": 2,
+                                "maxItems": 10,
+                            },
+                        ]
+                    },
                 },
                 "allOf": [
                     {
                         "if": {"properties": {"kind": {"const": "choice"}}},
-                        "then": {"required": ["options"], "properties": {"options": {"minItems": 1}}},
-                    }
+                        "then": {
+                            "anyOf": [
+                                {"required": ["options"], "properties": {"options": {"minItems": 1}}},
+                                {"required": ["criteria"], "properties": {"criteria": {"type": "object", "minProperties": 1}}},
+                            ]
+                        },
+                    },
+                    {
+                        "if": {"properties": {"kind": {"const": "score"}}},
+                        "then": {
+                            "required": ["criteria"],
+                            "properties": {
+                                "criteria": {
+                                    "type": "array",
+                                    "items": {"type": "string", "minLength": 1},
+                                    "minItems": 2,
+                                    "maxItems": 10,
+                                }
+                            },
+                        },
+                    },
                 ],
             },
         },
@@ -488,7 +568,7 @@ TOOLS = [
     {
         "name": "eljev_decide",
         "description": (
-            "Submit state and a typed choice or noul question to the local el-jev daemon. "
+            "Submit state and a typed choice, noul, or score question to the local el-jev daemon. "
             "Returns the daemon's auditable decision record or explicit backend status. "
             "v0 does not auto-approve non-trivial decisions."
         ),

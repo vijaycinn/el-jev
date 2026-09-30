@@ -6,24 +6,24 @@ param(
     [string[]]$CopilotArgs
 )
 
-$RepoRoot = "<path-to-el-jev>"
-$env:PYTHONPATH = "$RepoRoot;" + $env:PYTHONPATH
-$env:ELJEV_COHERE_ENDPOINT = "https://<your-resource>.services.ai.azure.com"
-$env:ELJEV_COHERE_DEPLOYMENT = "Cohere-rerank-v4.0-pro"
+# Portable launcher: starts Copilot CLI with el-jev forced off/on for this session only.
+# Endpoint and deployment come from `python -m eljev configure` (config.json), not this script.
+$RepoRoot = Split-Path -Parent $PSScriptRoot
+$env:PYTHONPATH = if ($env:PYTHONPATH) { "$RepoRoot$([IO.Path]::PathSeparator)$env:PYTHONPATH" } else { $RepoRoot }
 
 if ($NoJev) {
-    $env:ELJEV_ENABLED = "0"
-    Write-Host "[el-jev] Automatic decision routing disabled for this session." -ForegroundColor Yellow
+    $env:EL_JEV = "OFF"
+    Write-Host "[el-jev] Decision hook disabled for this session." -ForegroundColor Yellow
 } elseif ($WithJev) {
-    $env:ELJEV_ENABLED = "1"
-    Write-Host "[el-jev] Automatic decision routing enabled." -ForegroundColor Green
-    python -m eljev on | Out-Null
+    $env:EL_JEV = "ON"
+    Write-Host "[el-jev] Decision hook enabled for this session." -ForegroundColor Green
+    python -m eljev daemon start | Out-Null
 }
 
-$CopilotExe = "copilot"
-if (Test-Path $CopilotExe) {
-    & $CopilotExe @CopilotArgs
-} else {
-    $cmd = Get-Command -CommandType Application copilot | Select-Object -First 1 -ExpandProperty Source
-    & $cmd @CopilotArgs
+$Copilot = Get-Command -Name copilot -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $Copilot) {
+    Write-Error "copilot was not found on PATH."
+    exit 1
 }
+& $Copilot.Source @CopilotArgs
+exit $LASTEXITCODE

@@ -19,39 +19,41 @@
   ],
   "mainPath": ["prompt", "shaper", "cohere", "softmax", "gate", "act_fast"],
   "nodes": [
-    { "id": "prompt", "lane": "prompt_intake", "col": 0, "type": "external", "label": "User Prompt", "sublabel": "statement or ask", "width": 140 },
-    { "id": "shaper", "lane": "prompt_intake", "col": 1, "type": "backend", "label": "Shape Selector", "sublabel": "Choice, Noul, Score", "tag": "< 1ms parsing", "width": 140 },
+    { "id": "prompt", "lane": "prompt_intake", "col": 0, "type": "external", "label": "User Prompt", "sublabel": "marker or intent", "width": 140 },
+    { "id": "shaper", "lane": "prompt_intake", "col": 1, "type": "backend", "label": "Shape Selector", "sublabel": "Choice, Noul, Score", "tag": "caps validated", "width": 140 },
     { "id": "cohere", "lane": "decision_engine", "col": 2, "type": "cloud", "label": "Cohere Rerank", "sublabel": "cross-encoder inference", "tag": "p50: 175ms", "width": 140 },
-    { "id": "softmax", "lane": "decision_engine", "col": 3, "type": "backend", "label": "Softmax Scaling", "sublabel": "T=0.05 temperature", "tag": "sum(P) = 1.0", "width": 140 },
-    { "id": "gate", "lane": "dual_gate_lane", "col": 4, "type": "security", "label": "Dual Gate Check", "sublabel": "P(top)>=τ and Δ>=margin", "tag": "statistical gate", "width": 140 },
-    { "id": "act_fast", "lane": "execution", "col": 5, "type": "backend", "label": "Exit 0: Selected", "sublabel": "instant action, bypass LLM", "tag": "high confidence", "width": 140 },
-    { "id": "escalate", "lane": "dual_gate_lane", "col": 5, "type": "external", "label": "Exit 2: Needs Review", "sublabel": "proceed to LLM reasoning", "tag": "ambiguous / tie", "width": 140 }
+    { "id": "softmax", "lane": "decision_engine", "col": 3, "type": "backend", "label": "Softmax Scaling", "sublabel": "T from calibration", "tag": "sum(P) = 1.0", "width": 140 },
+    { "id": "fail_open", "lane": "dual_gate_lane", "col": 3, "type": "security", "label": "Engine Error", "sublabel": "no heuristic guess", "tag": "fail-open", "width": 140 },
+    { "id": "gate", "lane": "dual_gate_lane", "col": 4, "type": "security", "label": "Dual Gate Check", "sublabel": "P(top)>=τ and Δ>=margin", "tag": "calibrated only", "width": 140 },
+    { "id": "act_fast", "lane": "execution", "col": 5, "type": "backend", "label": "Exit 0: Selected", "sublabel": "act, skip LLM deliberation", "tag": "high confidence", "width": 140 },
+    { "id": "escalate", "lane": "dual_gate_lane", "col": 5, "type": "external", "label": "Exit 2: Needs Review", "sublabel": "proceed to LLM reasoning", "tag": "default policy", "width": 140 }
   ],
   "edges": [
     { "id": "e_prompt_shaper", "from": "prompt", "to": "shaper", "variant": "default" },
     { "id": "e_shaper_cohere", "from": "shaper", "to": "cohere", "label": "query + candidates", "variant": "emphasis" },
     { "id": "e_cohere_softmax", "from": "cohere", "to": "softmax", "label": "relevance scores", "variant": "default" },
+    { "id": "e_cohere_fail", "from": "cohere", "to": "fail_open", "label": "timeout / 401 / 429", "variant": "security", "role": "error" },
     { "id": "e_softmax_gate", "from": "softmax", "to": "gate", "label": "P(top) and margin", "variant": "default" },
     { "id": "e_gate_pass", "from": "gate", "to": "act_fast", "label": "pass dual gate", "variant": "emphasis" },
-    { "id": "e_gate_fail", "from": "gate", "to": "escalate", "label": "narrow margin / tie", "variant": "security" }
+    { "id": "e_gate_fail", "from": "gate", "to": "escalate", "label": "abstain / margin / tie", "variant": "security" }
   ],
   "cards": [
     {
       "dot": "cyan",
       "title": "Statement to Decision Mapping",
       "items": [
-        "A statement is mapped to exactly one decision shape based on the ask",
-        "Verification / safety questions -> Noul (binary True vs False)",
-        "Actions & intents -> Choice (multi-class routing across candidate categories)"
+        "Explicit eljev.request markers can ask for any shape",
+        "Hook intent mode: prompts of 4+ words -> Choice over 5 intents",
+        "No generic yes/no gate is invented from a bare prompt"
       ]
     },
     {
       "dot": "rose",
-      "title": "Dual Gate Safety Condition",
+      "title": "One Dual Gate for Every Shape",
       "items": [
-        "Pass: P(top) >= 0.70 AND (P(top) - P(runner-up)) >= 0.15 -> Exit 0 (Act immediately)",
-        "Fail: P(top) < 0.70 OR margin < 0.15 OR exact tie -> Exit 2 (Proceed to LLM)",
-        "Zero hallucination: low-margin ambiguity is never guessed"
+        "Default always_abstain_v0: every verdict is advisory (exit 2)",
+        "calibrated: exit 0 only if P(top)>=threshold and margin>=margin_threshold",
+        "Thresholds come from eval/calibration.json per kind; ties and engine errors never act"
       ]
     }
   ]

@@ -1,139 +1,60 @@
-"""Fast, fail-open el-jev pre-turn hook.
-
-The hook accepts either the native Copilot ``userPromptTransformed`` payload
-with an embedded request marker, or the generic ``eljev.hook/1`` payload
-documented in hooks/README.md.
-"""
+"""Fast, fail-open el-jev pre-turn hook."""
 
 from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import socket
+import subprocess
 import sys
 import time
-from pathlib import Path
 from typing import Any
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    from eljev import config as eljev_config
+except Exception:
+    eljev_config = None
 
 
 HOOK_SCHEMA = "eljev.hook/1"
 DECISION_SCHEMA = "eljev.decision/1"
-DEFAULT_TIMEOUT_MS = 1500
+DEFAULT_TIMEOUT_MS = 500
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
+DEFAULT_MIN_WORDS = 4
+MAX_PROMPT_CHARS = 4000
+MAX_RESPONSE_BYTES = 1_048_576
 MARKER_START = "<!--eljev.request:"
 MARKER_END = "-->"
-MAX_RESPONSE_BYTES = 1_048_576
+SPAWN_DEBOUNCE_SECONDS = 15.0
+SPAWN_STAMP_NAME = "spawn.stamp"
+
+INTENT_CRITERIA = {
+    "code_modification": "Implement, write, edit, generate, refactor, or fix code in files",
+    "review_audit": "Perform code review, security review, PR critique, or safety audit",
+    "investigation_search": "Search codebase, find symbols/files, explore architecture, check logs or documentation",
+    "execution_testing": "Run terminal commands, builds, test suites, or deployment tasks",
+    "advisory_explanation": "Provide high-level architecture advice, conceptual explanations, or technical explanations",
+}
 
 
-def _eljev_dir() -> Path:
-    env_dir = os.environ.get("ELJEV_DIR")
-    if env_dir:
-        return Path(env_dir).expanduser()
-    local_dir = Path(__file__).resolve().parent.parent / ".eljev"
-    local_dir.mkdir(parents=True, exist_ok=True)
-    return local_dir
+class _NoRequest(Exception):
+    """The payload intentionally does not require el-jev work."""
 
 
-CONFIG_PATH = _eljev_dir() / "config.json"
-
-
-def _get_el_jev_env() -> str | None:
-    for var in ("EL_JEV", "ELJEV_ENABLED", "ELJEV_HOOK_ENABLED"):
-        val = os.environ.get(var)
-        if val is not None and val.strip():
-            return val.strip()
-
-    if sys.platform == "win32":
-        try:
-            import winreg
-
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Environment") as key:
-                val, _ = winreg.QueryValueEx(key, "EL_JEV")
-                if val is not None and str(val).strip():
-                    return str(val).strip()
-        except Exception:
-            pass
-
-    return None
-
-
-def _enabled() -> bool:
-    env_val = _get_el_jev_env()
-    if env_val is not None:
-        s = env_val.lower()
-        if s in {"off", "0", "false", "no", "disable", "disabled"}:
-            return False
-        if s in {"on", "1", "true", "yes", "enable", "enabled"}:
-            return True
-
-    if CONFIG_PATH.exists():
-        try:
-            with CONFIG_PATH.open("r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            if isinstance(cfg, dict):
-                return bool(cfg.get("enabled", True))
-        except Exception:
-            pass
-
-    return True
-
-
-def _timeout_ms() -> int:
-    raw = os.environ.get("ELJEV_HOOK_TIMEOUT_MS", str(DEFAULT_TIMEOUT_MS))
-    try:
-        value = int(raw)
-    except ValueError:
-        return DEFAULT_TIMEOUT_MS
-    return max(value, 1)
-
-
-def _now_ms() -> float:
-    return time.perf_counter() * 1000.0
-
-
-def _logging_enabled() -> bool:
-    val = os.environ.get("ELJEV_LOGGING")
-    if val is not None:
-        return val.strip().lower() not in {"0", "false", "off", "no", "disable"}
-    if os.environ.get("ELJEV_NO_LOG") in {"1", "true", "yes"}:
-        return False
-    return True
-
-
-def _log(event: str, **fields: Any) -> None:
-    """Append diagnostics without ever writing secrets or candidate text."""
-    if not _logging_enabled():
-        return
-    try:
-        log_dir = Path(
-            os.environ.get("ELJEV_LOG_DIR", str(_eljev_dir() / "logs"))
-        ).expanduser()
-        log_dir.mkdir(parents=True, exist_ok=True)
-        record = {
-            "ts_ms": int(time.time() * 1000),
-            "event": event,
-            **fields,
-        }
-        with (log_dir / "hook.jsonl").open("a", encoding="utf-8") as stream:
-            stream.write(
-                json.dumps(record, ensure_ascii=True, separators=(",", ":")) + "\n"
-            )
-    except Exception:
-        # Logging must never turn a fail-open hook into a failed turn.
-        return
+class _DaemonUnavailable(Exception):
+    """The daemon is down or refused the connection."""
 
 
 def _emit(value: dict[str, Any]) -> None:
-    """Emit exactly one compact JSON object for Copilot's hook parser."""
-    try:
-        sys.stdout.write(
-            json.dumps(value, ensure_ascii=True, separators=(",", ":"), allow_nan=False)
-            + "\n"
-        )
-        sys.stdout.flush()
-    except Exception:
-        return
+    sys.stdout.write(json.dumps(value, ensure_ascii=True, separators=(",", ":"), allow_nan=False) + "\n")
+    sys.stdout.flush()
 
 
 def _read_payload() -> dict[str, Any] | None:
@@ -147,7 +68,49 @@ def _read_payload() -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _native_prompt(payload: dict[str, Any]) -> tuple[str, str] | None:
+def _timeout_ms() -> int:
+    raw = os.environ.get("ELJEV_HOOK_TIMEOUT_MS", str(DEFAULT_TIMEOUT_MS))
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return DEFAULT_TIMEOUT_MS
+    return max(parsed, 1)
+
+
+def _min_words() -> int:
+    raw = os.environ.get("ELJEV_HOOK_MIN_WORDS", str(DEFAULT_MIN_WORDS))
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return DEFAULT_MIN_WORDS
+    return max(parsed, 1)
+
+
+def _word_count(value: str) -> int:
+    return len([token for token in value.strip().split() if token])
+
+
+def _remaining_seconds(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("hook deadline exceeded")
+    return remaining
+
+
+def _log(event: str, **fields: object) -> None:
+    if eljev_config is None or not eljev_config.logging_enabled():
+        return
+    try:
+        directory = eljev_config.log_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        payload = {"ts_ms": int(time.time() * 1000), "event": event, **fields}
+        with (directory / "hook.jsonl").open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n")
+    except OSError:
+        return
+
+
+def _native_marker_request(payload: dict[str, Any]) -> tuple[dict[str, Any], str] | None:
     prompt = payload.get("transformedPrompt")
     if not isinstance(prompt, str):
         prompt = payload.get("transformed_prompt")
@@ -160,244 +123,75 @@ def _native_prompt(payload: dict[str, Any]) -> tuple[str, str] | None:
     end = prompt.find(MARKER_END, body_start)
     if end < 0:
         return None
-    marker_json = prompt[body_start:end].strip()
     try:
-        request = json.loads(marker_json)
+        request = json.loads(prompt[body_start:end].strip())
     except json.JSONDecodeError:
         return None
     if not isinstance(request, dict):
         return None
-    cleaned = (prompt[:start] + prompt[end + len(MARKER_END) :]).strip()
-    return json.dumps(request, ensure_ascii=True), cleaned
+    cleaned_prompt = (prompt[:start] + prompt[end + len(MARKER_END) :]).strip()
+    return request, cleaned_prompt
 
 
-def _is_binary_question(text: str) -> bool:
-    t = text.strip().lower()
-    prefixes = (
-        "is ",
-        "is it",
-        "should ",
-        "can ",
-        "can we",
-        "could ",
-        "does ",
-        "does it",
-        "will ",
-        "would ",
-        "are ",
-        "was ",
-    )
-    if any(t.startswith(p) for p in prefixes):
-        return True
-    if "?" in t and any(k in t for k in ("safe to", "should i", "should we", "is it safe")):
-        return True
-    return False
-
-
-def _auto_question_from_prompt(prompt: str) -> dict[str, Any]:
-    cleaned = prompt.strip()
-    if _is_binary_question(cleaned):
-        return {
-            "path": "/v1/decide",
-            "state": cleaned,
-            "question": {
-                "id": "auto_gate",
-                "kind": "noul",
-                "instructions": cleaned,
-                "criteria": {
-                    "true": "Affirmative, approved, safe, recommended, or correct",
-                    "false": "Negative, rejected, risky, not recommended, or incorrect",
-                },
-            },
-        }
-    else:
-        return {
-            "path": "/v1/decide",
-            "state": cleaned,
-            "question": {
-                "id": "intent_choice",
-                "kind": "choice",
-                "instructions": "Classify the primary action intent for this request",
-                "criteria": {
-                    "code_modification": "Implement, write, edit, generate, refactor, or fix code in files",
-                    "review_audit": "Perform code review, security review, PR critique, or safety audit",
-                    "investigation_search": "Search codebase, find symbols/files, explore architecture, check logs or documentation",
-                    "execution_testing": "Run terminal commands, builds, test suites, or deployment tasks",
-                    "advisory_explanation": "Provide high-level architecture advice, conceptual explanations, or answering technical questions",
-                },
-            },
-        }
-
-
-def _request_from_payload(
-    payload: dict[str, Any],
-) -> tuple[dict[str, Any], bool, str | None]:
+def _generic_request(payload: dict[str, Any]) -> dict[str, Any] | None:
     if payload.get("schema") == HOOK_SCHEMA:
-        return payload, False, None
-
+        return payload
     if isinstance(payload.get("criterion"), str) and "candidates" in payload:
-        return payload, False, None
+        return payload
+    return None
 
-    native = _native_prompt(payload)
-    if native is not None:
-        request_json, cleaned_prompt = native
-        request = json.loads(request_json)
-        request["prompt"] = cleaned_prompt
-        request["transformedPrompt"] = cleaned_prompt
+
+def _intent_request(prompt: str, payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    cleaned = prompt.strip()
+    if not cleaned or len(cleaned) > MAX_PROMPT_CHARS:
+        raise _NoRequest()
+    if _word_count(cleaned) < _min_words():
+        raise _NoRequest()
+    request = {
+        "path": "/v1/decide",
+        "state": cleaned,
+        "question": {
+            "id": "intent_choice",
+            "kind": "choice",
+            "criteria": INTENT_CRITERIA,
+        },
+        "session_id": payload.get("sessionId") or payload.get("session_id"),
+    }
+    return request, cleaned
+
+
+def _request_from_payload(payload: dict[str, Any], mode: str) -> tuple[dict[str, Any], bool, str | None]:
+    generic = _generic_request(payload)
+    if generic is not None:
+        return generic, False, None
+
+    marked = _native_marker_request(payload)
+    if marked is not None:
+        request, cleaned_prompt = marked
         request["session_id"] = payload.get("sessionId") or payload.get("session_id")
         return request, True, cleaned_prompt
 
-    # Automatic routing for direct user interactions without embedded markers
-    raw_prompt = payload.get("transformedPrompt") or payload.get("prompt")
-    if not isinstance(raw_prompt, str) or not raw_prompt.strip():
-        raise ValueError("no prompt in payload")
+    if mode == "marker":
+        raise _NoRequest()
 
-    cleaned_prompt = raw_prompt.strip()
-    tokens = cleaned_prompt.lower().split()
-    if len(tokens) <= 2 and tokens[0] in {"hi", "hello", "hey", "thanks", "ok", "yes", "no", "bye"}:
-        raise ValueError("trivial interaction")
+    prompt = payload.get("transformedPrompt")
+    if not isinstance(prompt, str):
+        prompt = payload.get("prompt")
+    if not isinstance(prompt, str):
+        raise _NoRequest()
 
-    auto_req = _auto_question_from_prompt(cleaned_prompt)
-    auto_req["session_id"] = payload.get("sessionId") or payload.get("session_id")
-    return auto_req, True, cleaned_prompt
-
-
-def _daemon_target() -> tuple[str, int]:
-    raw_url = os.environ.get("ELJEV_HOOK_DAEMON_URL", "").strip()
-    if raw_url:
-        if not raw_url.startswith("http://"):
-            raise ValueError("ELJEV_HOOK_DAEMON_URL must use http://")
-        authority = raw_url[7:].split("/", 1)[0]
-        if ":" in authority:
-            host, port_text = authority.rsplit(":", 1)
-            return host, int(port_text)
-        return authority, DEFAULT_PORT
-    host = os.environ.get("ELJEV_HOST", DEFAULT_HOST)
-    port = int(os.environ.get("ELJEV_PORT", str(DEFAULT_PORT)))
-    return host, port
-
-
-def _remaining(deadline: float) -> float:
-    remaining = deadline - time.perf_counter()
-    if remaining <= 0:
-        raise TimeoutError("hook deadline exceeded")
-    return remaining
-
-
-def _spawn_daemon_if_needed(host: str, port: int) -> None:
-    if host not in {"127.0.0.1", "localhost"}:
-        return
-    import subprocess
-
-    flags = (
-        getattr(subprocess, "DETACHED_PROCESS", 0)
-        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    )
-    repo_root = Path(__file__).resolve().parent.parent
-    env = dict(os.environ)
-    if "PYTHONPATH" not in env or str(repo_root) not in env["PYTHONPATH"]:
-        env["PYTHONPATH"] = f"{repo_root};" + env.get("PYTHONPATH", "")
-    if "ELJEV_COHERE_ENDPOINT" not in env:
-        env["ELJEV_COHERE_ENDPOINT"] = "https://<your-resource>.services.ai.azure.com"
-    if "ELJEV_COHERE_DEPLOYMENT" not in env:
-        env["ELJEV_COHERE_DEPLOYMENT"] = "Cohere-rerank-v4.0-pro"
-
-    try:
-        subprocess.Popen(
-            [sys.executable, "-m", "eljev", "_daemon-run"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            creationflags=flags,
-            cwd=str(repo_root),
-            env=env,
-        )
-    except Exception:
-        pass
-
-
-def _http_json(
-    method: str,
-    path: str,
-    payload: dict[str, Any],
-    deadline: float,
-) -> dict[str, Any]:
-    host, port = _daemon_target()
-    body = json.dumps(
-        payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False
-    ).encode("utf-8")
-    request = (
-        f"{method} {path} HTTP/1.1\r\n"
-        f"Host: {host}:{port}\r\n"
-        "Accept: application/json\r\n"
-        "Content-Type: application/json\r\n"
-        "Connection: close\r\n"
-        f"Content-Length: {len(body)}\r\n"
-        "\r\n"
-    ).encode("ascii") + body
-
-    try:
-        connection = socket.create_connection((host, port), timeout=min(0.2, _remaining(deadline)))
-    except (ConnectionRefusedError, OSError):
-        _spawn_daemon_if_needed(host, port)
-        time.sleep(0.15)
-        connection = socket.create_connection((host, port), timeout=_remaining(deadline))
-
-    with connection:
-        connection.settimeout(_remaining(deadline))
-        connection.sendall(request)
-        chunks: list[bytes] = []
-        total = 0
-        while total < MAX_RESPONSE_BYTES:
-            chunk = connection.recv(min(65_536, MAX_RESPONSE_BYTES - total))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-            if b"\r\n\r\n" in b"".join(chunks):
-                header_end = b"".join(chunks).find(b"\r\n\r\n")
-                headers = b"".join(chunks)[:header_end].lower()
-                marker = b"content-length:"
-                if marker in headers:
-                    line = next(
-                        line for line in headers.split(b"\r\n") if line.startswith(marker)
-                    )
-                    expected = int(line.split(b":", 1)[1].strip())
-                    if total - header_end - 4 >= expected:
-                        break
-
-    raw = b"".join(chunks)
-    header_raw, separator, body_raw = raw.partition(b"\r\n\r\n")
-    if not separator:
-        raise ValueError("daemon returned an incomplete HTTP response")
-    status_line = header_raw.split(b"\r\n", 1)[0].decode("ascii", "replace")
-    try:
-        status_code = int(status_line.split(" ", 2)[1])
-    except (IndexError, ValueError) as error:
-        raise ValueError("daemon returned an invalid HTTP status") from error
-    if status_code < 200 or status_code >= 300:
-        raise ConnectionError(f"daemon returned HTTP {status_code}")
-    try:
-        value = json.loads(body_raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ValueError("daemon returned malformed JSON") from error
-    if not isinstance(value, dict):
-        raise ValueError("daemon returned a non-object JSON body")
-    return value
+    request, cleaned_prompt = _intent_request(prompt, payload)
+    return request, True, cleaned_prompt
 
 
 def _request_body(request: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     path = request.get("path")
     if not isinstance(path, str):
         path = "/v1/decide" if "question" in request else "/v1/screen"
-    if path not in {"/v1/screen", "/v1/decide"}:
-        raise ValueError("hook path must be /v1/screen or /v1/decide")
+    if path not in {"/v1/decide", "/v1/screen"}:
+        raise ValueError("hook path must be /v1/decide or /v1/screen")
     if path == "/v1/decide":
-        body = {
-            "state": request.get("state", ""),
-            "question": request.get("question"),
-        }
+        body = {"state": request.get("state"), "question": request.get("question")}
     else:
         body = {
             "criterion": request.get("criterion"),
@@ -405,7 +199,129 @@ def _request_body(request: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
             "top_n": request.get("top_n", 10),
             "tier": request.get("tier", "auto"),
         }
-    return path, str(request.get("task_id") or request.get("session_id") or ""), body
+    task_id = str(request.get("task_id") or request.get("session_id") or "")
+    return path, task_id, body
+
+
+def _daemon_target() -> tuple[str, int]:
+    host = os.environ.get("ELJEV_HOST", DEFAULT_HOST)
+    raw_port = os.environ.get("ELJEV_PORT", str(DEFAULT_PORT))
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise ValueError("ELJEV_PORT must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError("ELJEV_PORT must be in range 1..65535")
+    return host, port
+
+
+def _spawn_stamp_path() -> Path:
+    if eljev_config is None:
+        return REPO_ROOT / ".eljev" / SPAWN_STAMP_NAME
+    return eljev_config.eljev_dir() / SPAWN_STAMP_NAME
+
+
+def _spawn_daemon_once() -> None:
+    stamp = _spawn_stamp_path()
+    now = time.time()
+    try:
+        if stamp.exists() and now - stamp.stat().st_mtime < SPAWN_DEBOUNCE_SECONDS:
+            return
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(f"{int(now)}\n", encoding="ascii")
+    except OSError:
+        return
+
+    environment = dict(os.environ)
+    root = str(REPO_ROOT)
+    existing = environment.get("PYTHONPATH", "")
+    entries = [entry for entry in existing.split(os.pathsep) if entry]
+    if root not in entries:
+        entries.insert(0, root)
+    environment["PYTHONPATH"] = os.pathsep.join(entries)
+
+    kwargs: dict[str, object] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "close_fds": True,
+        "cwd": str(REPO_ROOT),
+        "env": environment,
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+    else:
+        kwargs["start_new_session"] = True
+
+    try:
+        process = subprocess.Popen([sys.executable, "-m", "eljev", "_daemon-run"], **kwargs)
+    except OSError:
+        return
+    _log("daemon_spawned", pid=process.pid)
+
+
+def _http_json(path: str, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
+    host, port = _daemon_target()
+    body = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    request = (
+        f"POST {path} HTTP/1.1\r\n"
+        f"Host: {DEFAULT_HOST}:{port}\r\n"
+        "Accept: application/json\r\n"
+        "Content-Type: application/json\r\n"
+        "Connection: close\r\n"
+        f"Content-Length: {len(body)}\r\n"
+        "\r\n"
+    ).encode("ascii") + body
+
+    connect_timeout = min(0.1, _remaining_seconds(deadline))
+    try:
+        connection = socket.create_connection((host, port), timeout=connect_timeout)
+    except (ConnectionRefusedError, TimeoutError, OSError) as exc:
+        raise _DaemonUnavailable() from exc
+
+    with connection:
+        connection.settimeout(_remaining_seconds(deadline))
+        connection.sendall(request)
+        response = bytearray()
+        while True:
+            connection.settimeout(_remaining_seconds(deadline))
+            chunk = connection.recv(65_536)
+            if not chunk:
+                break
+            response.extend(chunk)
+            if len(response) > MAX_RESPONSE_BYTES:
+                raise ValueError("daemon response exceeded max size")
+            if b"\r\n\r\n" in response:
+                headers, _, body_bytes = response.partition(b"\r\n\r\n")
+                content_length = None
+                for line in headers.split(b"\r\n")[1:]:
+                    if line.lower().startswith(b"content-length:"):
+                        content_length = int(line.split(b":", 1)[1].strip())
+                        break
+                if content_length is not None and len(body_bytes) >= content_length:
+                    break
+
+    header_bytes, separator, body_bytes = bytes(response).partition(b"\r\n\r\n")
+    if not separator:
+        raise ValueError("daemon returned an incomplete HTTP response")
+    status_line = header_bytes.split(b"\r\n", 1)[0].decode("ascii", "replace")
+    try:
+        status_code = int(status_line.split(" ", 2)[1])
+    except (IndexError, ValueError) as exc:
+        raise ValueError("daemon returned an invalid HTTP status") from exc
+    if status_code < 200 or status_code >= 300:
+        raise ValueError(f"daemon returned HTTP {status_code}")
+    try:
+        decoded = json.loads(body_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("daemon returned malformed JSON") from exc
+    if not isinstance(decoded, dict):
+        raise ValueError("daemon returned a non-object JSON body")
+    return decoded
 
 
 def _oracle_override() -> dict[str, Any] | None:
@@ -418,83 +334,132 @@ def _oracle_override() -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def _decision_context(decision: dict[str, Any]) -> str:
-    kind = decision.get("kind") or decision.get("shape", "decision")
-    choice = decision.get("choice")
-    conf = decision.get("confidence")
-    probs = decision.get("probabilities")
-    noul = decision.get("noul")
-    status = decision.get("status", "selected")
+def _format_probability_items(probabilities: dict[str, Any]) -> str | None:
+    scored: list[tuple[str, float]] = []
+    for key, value in probabilities.items():
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            scored.append((str(key), float(value)))
+    if not scored:
+        return None
+    scored.sort(key=lambda item: item[1], reverse=True)
+    top = scored[:3]
+    return ", ".join(f"{name}={score:.3f}" for name, score in top)
+
+
+def _decision_block(decision: dict[str, Any]) -> str:
+    kind = decision.get("kind")
+    if not isinstance(kind, str):
+        kind = str(decision.get("shape", "decision"))
+    selected = decision.get("choice")
+    if selected is None and decision.get("score") is not None:
+        selected = decision.get("score")
+    confidence = decision.get("confidence")
+    margin = decision.get("margin")
+    if margin is None:
+        margin = decision.get("margin_calibrated")
+    if margin is None:
+        margin = decision.get("margin_raw")
+    status = decision.get("status")
+    if not isinstance(status, str):
+        status = "needs_review"
+    exit_code = decision.get("exit_code")
+    if not isinstance(exit_code, int):
+        exit_code = 2
+
+    summary_parts = [f"kind: {kind}"]
+    if selected is not None:
+        summary_parts.append(f"decision: {selected}")
+    if isinstance(confidence, (int, float)):
+        summary_parts.append(f"confidence: {float(confidence):.2f}")
+    if isinstance(margin, (int, float)):
+        summary_parts.append(f"margin: {float(margin):.2f}")
+
+    if status == "selected" and exit_code == 0:
+        gate_line = "gate: selected (exit 0) -> high-confidence calibrated decision"
+    else:
+        gate_line = f"gate: {status} (exit {exit_code}) -> treat as a hint; reason normally"
 
     lines = [
-        "[el-jev decision]",
-        f"- type: {kind}",
-        f"- decision: {choice}",
+        "[el-jev advisory]",
+        " | ".join(summary_parts),
+        gate_line,
     ]
-    if conf is not None:
-        lines.append(f"- confidence: {conf}")
-    if noul is not None:
-        lines.append(f"- p(true): {noul}")
-    if probs and isinstance(probs, dict):
-        prob_str = ", ".join(f"{k}: {v}" for k, v in probs.items())
-        lines.append(f"- probabilities: {{{prob_str}}}")
-    lines.append(f"- status: {status}")
-    lines.append("[/el-jev decision]")
+    probabilities = decision.get("probabilities")
+    if isinstance(probabilities, dict):
+        top = _format_probability_items(probabilities)
+        if top is not None:
+            lines.append(f"probabilities: {top}")
+    lines.append("[/el-jev advisory]")
     return "\n".join(lines)
+
+
+def _decision_allows_injection(decision: dict[str, Any]) -> bool:
+    status = decision.get("status")
+    return isinstance(status, str) and status in {"selected", "needs_review", "abstain_tie"}
 
 
 def main() -> int:
     payload = _read_payload()
     if payload is None:
-        _log("invalid_input")
         _emit({})
         return 0
-    if not _enabled():
+    if eljev_config is None:
         _emit({})
         return 0
 
-    started = _now_ms()
+    enabled, _ = eljev_config.enabled_state()
+    if not enabled:
+        _emit({})
+        return 0
+
+    started = time.perf_counter()
     try:
-        request, native, cleaned_prompt = _request_from_payload(payload)
+        mode = eljev_config.hook_mode()
+        request, is_native, cleaned_prompt = _request_from_payload(payload, mode)
         path, task_id, body = _request_body(request)
-        deadline = time.perf_counter() + (_timeout_ms() / 1000.0)
         decision = _oracle_override()
+        from_oracle = decision is not None
         if decision is None:
-            decision = _http_json("POST", path, body, deadline)
-        if decision.get("schema") != DECISION_SCHEMA:
-            raise ValueError("daemon returned the wrong decision schema")
+            deadline = time.monotonic() + (_timeout_ms() / 1000.0)
+            try:
+                decision = _http_json(path, body, deadline)
+            except _DaemonUnavailable:
+                _spawn_daemon_once()
+                _emit({})
+                return 0
+        if not isinstance(decision, dict) or decision.get("schema") != DECISION_SCHEMA:
+            raise ValueError("daemon returned an invalid decision schema")
+        if not _decision_allows_injection(decision):
+            _emit({})
+            return 0
 
         _log(
             "decision",
             task_id=task_id or None,
+            kind=decision.get("kind"),
             status=decision.get("status"),
-            error_kind=decision.get("error_kind"),
-            elapsed_ms=round(_now_ms() - started, 3),
-            oracle=bool(_oracle_override()),
+            exit_code=decision.get("exit_code"),
+            confidence=decision.get("confidence"),
+            elapsed_ms=round((time.perf_counter() - started) * 1000.0, 3),
+            oracle=from_oracle,
         )
-        if native:
-            assert cleaned_prompt is not None
-            _emit(
-                {
-                    "modifiedTransformedPrompt": (
-                        cleaned_prompt + "\n\n" + _decision_context(decision)
-                    ).strip()
-                }
-            )
-        else:
-            _emit(
-                {
-                    "schema": "eljev.hook_result/1",
-                    "task_id": task_id or None,
-                    "decision": decision,
-                }
-            )
+
+        if is_native and isinstance(cleaned_prompt, str):
+            block = _decision_block(decision)
+            _emit({"modifiedTransformedPrompt": (cleaned_prompt + "\n\n" + block).strip()})
+            return 0
+        _emit({"schema": "eljev.hook_result/1", "task_id": task_id or None, "decision": decision})
+        return 0
+    except _NoRequest:
+        _emit({})
         return 0
     except Exception as error:
         _log(
             "fail_open",
             error_kind=type(error).__name__,
-            elapsed_ms=round(_now_ms() - started, 3),
+            elapsed_ms=round((time.perf_counter() - started) * 1000.0, 3),
         )
         _emit({})
         return 0

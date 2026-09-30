@@ -1,112 +1,29 @@
-# el-jev Copilot CLI hook
+# el-jev Copilot pre-turn hook
 
-`eljev_pre_turn.py` is the deterministic, fail-open hook path for el-jev. It
-uses a warm local daemon over a small raw-socket HTTP client. It does not import
-`http.client`, does not use `argparse`, and never prints diagnostics to stdout.
-The default timeout is **250 ms** (`ELJEV_HOOK_TIMEOUT_MS`).
+`hooks/eljev_pre_turn.py` is the Copilot `userPromptTransformed` hook path for `el-jev`.
+It is fail-open by design: when disabled or unavailable, it returns `{}` quickly and does not block the user turn.
 
-## Copilot CLI mechanism
+## Install the hook
 
-Copilot CLI has a native hook that fits the pre-turn requirement:
-
-- `userPromptTransformed` fires after prompt transformation and immediately
-  before the model-facing content is emitted.
-- A command hook may return `modifiedTransformedPrompt`.
-- `userPromptSubmitted` is not suitable for this job: command-configured
-  `modifiedPrompt` output is explicitly dropped.
-
-This is documented in the official references:
-
-- [Using hooks with GitHub Copilot CLI](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/use-hooks)
-- [Copilot hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference)
-
-Hooks are loaded from `.github/hooks/*.json` in a repository or
-`%USERPROFILE%\.copilot\hooks\*.json` for user-level hooks. The installer does
-not edit either existing MCP configuration or existing hook configuration. It
-only prints the exact blocks and, when explicitly requested, can add a new
-user-level hook file.
-
-## Opt-in behavior
-
-The hook is **off by default**. Set:
+Use the CLI installer instead of hand-authoring hook JSON.
 
 ```powershell
-$env:ELJEV_HOOK_ENABLED = "1"
+python -m eljev install-hook --scope user
+# or:
+python -m eljev install-hook --scope repo --repo <path-to-repo>
 ```
 
-The hook does nothing when the variable is absent or false. Transport failures,
-timeouts, malformed responses, and invalid input all return `{}` and exit
-successfully, so a user's turn continues unchanged. Diagnostics go to
-`$env:ELJEV_LOG_DIR` or `~\.eljev\logs\hook.jsonl`; candidate text, tokens, and
-authorization data are never logged.
-
-## Native Copilot payload
-
-Configure the hook on `userPromptTransformed`. Copilot supplies a payload like:
-
-```json
-{
-  "sessionId": "session-id",
-  "timestamp": 1769340000000,
-  "cwd": "C:\\workspace\\project",
-  "prompt": "user prompt",
-  "transformedPrompt": "model-facing prompt"
-}
+```bash
+python -m eljev install-hook --scope user
+# or:
+python -m eljev install-hook --scope repo --repo <path-to-repo>
 ```
 
-The native event has no typed-decision fields. A wrapper therefore embeds this
-marker in `transformedPrompt` when it already has deterministic candidates:
+`--scope user` writes to `<COPILOT_HOME or ~/.copilot>/hooks/eljev.json`.
+`--scope repo` writes to `<repo>/.github/hooks/eljev.json`.
+Use `--force` to overwrite.
 
-```text
-<!--eljev.request:{"task_id":"task-17","criterion":"most urgent","candidates":[{"id":"c1","text":"..."}],"top_n":1,"tier":"auto"}-->
-```
-
-The hook removes the marker, calls `POST /v1/screen`, and appends a compact
-decision context to the model-facing prompt. Without the marker, it returns
-`{}`. Shape A is also supported by supplying `"path":"/v1/decide"`,
-`"state"`, and `"question"` in the marker object.
-
-The daemon target is `http://127.0.0.1:8787` by default. Override it with
-`ELJEV_HOOK_DAEMON_URL`, or use `ELJEV_HOST` and `ELJEV_PORT`.
-
-## Generic wrapper contract
-
-A harness or host wrapper can call the same script with a JSON object on stdin.
-This avoids inventing a second hook API:
-
-```json
-{
-  "schema": "eljev.hook/1",
-  "event": "pre_turn",
-  "task_id": "task-17",
-  "criterion": "most urgent",
-  "candidates": [
-    {"id": "c1", "text": "item one"},
-    {"id": "c2", "text": "item two"}
-  ],
-  "top_n": 1,
-  "tier": "auto"
-}
-```
-
-The single stdout line on success is:
-
-```json
-{
-  "schema": "eljev.hook_result/1",
-  "task_id": "task-17",
-  "decision": {"schema": "eljev.decision/1"}
-}
-```
-
-For native `userPromptTransformed`, the single stdout line instead uses
-Copilot's required `{"modifiedTransformedPrompt":"..."}` shape. Empty output is
-not used: `{}` is emitted so the hook parser always receives one valid JSON
-object.
-
-## Hook configuration
-
-The installer prints, but does not write, a configuration block like this:
+The generated shape is (the installer substitutes the absolute path of the current interpreter and of this checkout's hook):
 
 ```json
 {
@@ -115,94 +32,72 @@ The installer prints, but does not write, a configuration block like this:
     "userPromptTransformed": [
       {
         "type": "command",
-        "exec": "python",
-        "args": ["<path-to-el-jev>/hooks/eljev_pre_turn.py"],
-        "timeoutSec": 0.25
+        "bash": "\"<python>\" \"<path-to-el-jev>/hooks/eljev_pre_turn.py\"",
+        "powershell": "& \"<python>\" \"<path-to-el-jev>/hooks/eljev_pre_turn.py\"",
+        "timeoutSec": 2,
+        "comment": "el-jev pre-turn decision hook (installed by eljev install-hook)"
       }
     ]
   }
 }
 ```
 
-The script remains opt-in after installation because
-`ELJEV_HOOK_ENABLED` defaults to off. Review the path and add the block to a
-new user-level hook file or repository hook file as appropriate.
+A repo-scoped hook file contains absolute local paths, so keep `.github/hooks/eljev.json` out of source control (this repository's `.gitignore` already does).
 
-## S1 oracle-ceiling JSONL
+## Hook modes
 
-`scripts/oracle_ceiling.py` accepts canonical `eljev.oracle/1` records. The
-checkout currently has no `eval/` corpus schema to reuse, so this schema keeps
-the contract's `eljev.decision/1` fields inside an explicit replay task:
+`ELJEV_HOOK_MODE` / config `hook_mode`:
 
-```json
-{
-  "schema": "eljev.oracle/1",
-  "task_id": "task-17",
-  "decision_id": "optional-decision-id",
-  "task": {
-    "criterion": "most urgent",
-    "candidates": [
-      {"id": "c1", "text": "routine item"},
-      {"id": "c2", "text": "urgent item"}
-    ],
-    "top_n": 1,
-    "tier": "auto"
-  },
-  "oracle_verdict": {
-    "schema": "eljev.decision/1",
-    "choice": "c2",
-    "choice_index": 1,
-    "status": "selected",
-    "exit_code": 0
-  },
-  "expected_choice": "c2",
-  "trigger": "userPromptTransformed"
-}
+- `intent` (default): classify eligible prompts into a `choice` over five intents.
+- `marker`: only process explicit marker payloads (`<!--eljev.request:{...}-->`) or generic `eljev.hook/1`.
+
+Related controls:
+
+| Variable | Default | Purpose |
+|---|---:|---|
+| `EL_JEV` | `ON` | Global on/off switch |
+| `ELJEV_HOOK_MODE` | `intent` | Hook routing mode |
+| `ELJEV_HOOK_MIN_WORDS` | 4 | Minimum words for intent routing |
+| `ELJEV_HOOK_TIMEOUT_MS` | 500 | Hook-side request budget |
+| `ELJEV_DIR` | `<repo>/.eljev` | State directory (`spawn.stamp`, logs) |
+
+## Fail-open and spawn behavior
+
+- If disabled, returns `{}` with no network call.
+- If daemon is unavailable, hook triggers one debounced spawn attempt (15s window) and returns `{}` immediately.
+- No sleeping occurs on the prompt path.
+- Only `selected`, `needs_review`, and `abstain_tie` outcomes inject advisory text.
+- Engine errors inject nothing.
+
+Example injected block:
+
+```text
+[el-jev advisory]
+kind: choice | decision: review_audit | confidence: 0.70 | margin: 0.58
+gate: needs_review (exit 2) -> treat as a hint; reason normally
+probabilities: review_audit=0.698, investigation_search=0.117, code_modification=0.086
+[/el-jev advisory]
 ```
 
-The harness also accepts an `eljev.decision/1` record when it carries the
-replay `task` (or top-level `criterion` and `candidates`) plus
-`oracle_verdict` or `expected_choice`. It does not invent missing candidate
-text from a ranked result.
+## Logging
 
-Run it with a persistent adapter:
+- Hook log path: `<ELJEV_DIR>/logs/hook.jsonl`
+- Prompt text is not logged.
+- Candidate text in decision logs is redacted by default (`ELJEV_REDACT=1`).
 
-```powershell
-python scripts\oracle_ceiling.py `
-  --input decisions.jsonl `
-  --runner oracle_runner.py `
-  --report oracle-report.json
-```
+## Oracle mode (testing only)
 
-The adapter receives one `eljev.oracle.request/1` JSON object per line for
-each arm. It must execute the same task for `baseline`, and inject the supplied
-`oracle_verdict` through the real `trigger` for `oracle` without a model call.
-It returns one `eljev.oracle.result/1` object per line:
-
-```json
-{
-  "schema": "eljev.oracle.result/1",
-  "outcome_correct": true,
-  "task_time_ms": 465.0,
-  "turns": 2,
-  "input_tokens": 120,
-  "output_tokens": 40
-}
-```
-
-`oracle-report.json` preserves paired per-arm wall time, turns, tokens, and
-correctness. The gate requires at least 10 pairs, no oracle correctness
-regression, and a material improvement in wall time, turns, or tokens.
-
-## Oracle test override
-
-The S1 oracle harness can exercise the same hook trigger without model
-latency by setting both variables for a test process only:
+The hook can run in deterministic oracle mode for experiments:
 
 ```powershell
 $env:ELJEV_ORACLE_MODE = "1"
-$env:ELJEV_ORACLE_VERDICT_JSON = '{"schema":"eljev.decision/1","choice":"c2","choice_index":1,"status":"selected","exit_code":0}'
+$env:ELJEV_ORACLE_VERDICT_JSON = '{"schema":"eljev.decision/1","status":"selected","exit_code":0}'
 ```
 
-Never set these variables in a normal Copilot session. They are ignored unless
-`ELJEV_ORACLE_MODE=1` is explicit.
+```bash
+export ELJEV_ORACLE_MODE=1
+export ELJEV_ORACLE_VERDICT_JSON='{"schema":"eljev.decision/1","status":"selected","exit_code":0}'
+```
+
+Do not enable oracle mode in normal user sessions.
+

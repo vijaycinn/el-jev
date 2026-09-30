@@ -1,49 +1,45 @@
-"""Local HTTP daemon for el-jev.
-
-Remote engine calls are serialized by one bounded semaphore. Validation, pregate,
-health, and log requests do not acquire it, so a slow paid call cannot starve
-local work or health probes.
-"""
+"""Local HTTP daemon for el-jev."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import json
 import os
 from pathlib import Path
+import signal
+import socket
+import sys
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 from typing import Any
 
+from . import config
 from .decisionlog import DecisionLog
 from .engines.cohere import CohereClient, CohereError
-from .engines.systemone import SystemOneClient, SystemOneEngine, SystemOneError
+from .engines.systemone import SystemOneEngine, SystemOneError
 from .pregate import check_pregate
 from .types import Candidate, DecisionRecord, SCHEMA
 from .validate import InputValidationError, validate_request, validate_top_n
-from .verdict import verdict_from_engine
+from .verdict import calibration_for, load_calibration, verdict_from_engine
 
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
+# Token check and idle-connection probe are cheap and never billed; 30 s keeps a
+# server-closed keep-alive from being the connection the next hook request uses.
+WARM_INTERVAL_S = 30.0
 
 
-def load_calibration() -> dict[str, Any] | None:
-    """Load the optional evaluation artifact without allowing it to crash a request."""
-
-    path = Path(__file__).resolve().parent.parent / "eval" / "calibration.json"
-    try:
-        with path.open("r", encoding="utf-8") as stream:
-            value = json.load(stream)
-    except (OSError, ValueError):
-        return None
-    return value if isinstance(value, dict) else None
-
-
-def _elapsed(total_start: float, pregate_start: float, engine_start: float | None, engine_end: float | None) -> dict[str, float]:
+def _elapsed(
+    total_start: float,
+    pregate_start: float,
+    engine_start: float | None,
+    engine_end: float | None,
+) -> dict[str, float]:
     now = time.perf_counter()
     total = (now - total_start) * 1000.0
     pregate = (engine_start - pregate_start) * 1000.0 if engine_start is not None else total
@@ -60,9 +56,49 @@ def _elapsed(total_start: float, pregate_start: float, engine_start: float | Non
     }
 
 
+def _write_pidfile(path: Path, pid: int, port: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(prefix=f"{path.name}.", suffix=".tmp", dir=str(path.parent))
+    record = {"pid": pid, "port": port, "started_at": time.time(), "exe": sys.executable}
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(record, stream)
+            stream.write("\n")
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def _pidfile_owner(content: str) -> int | None:
+    try:
+        value = json.loads(content)
+    except ValueError:
+        return None
+    if isinstance(value, dict) and isinstance(value.get("pid"), int):
+        return int(value["pid"])
+    return value if isinstance(value, int) else None
+
+
+def _remove_pidfile_if_owner(path: Path, pid: int) -> None:
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return
+    if _pidfile_owner(content) != pid:
+        return
+    try:
+        path.unlink()
+    except OSError:
+        pass
+
+
 class EljevHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    allow_reuse_address = sys.platform != "win32"
 
     def __init__(self, server_address: tuple[str, int], handler_class: type[BaseHTTPRequestHandler]) -> None:
         if server_address[0] != DEFAULT_HOST:
@@ -73,10 +109,19 @@ class EljevHTTPServer(ThreadingHTTPServer):
         self.cohere = CohereClient()
         self.systemone = SystemOneEngine(cohere=self.cohere)
         self.decision_log = DecisionLog()
+        self.last_warm_ok = False
+        self._warm_stop = threading.Event()
+
+    def server_bind(self) -> None:
+        if sys.platform == "win32":
+            exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+            if exclusive is not None:
+                self.socket.setsockopt(socket.SOL_SOCKET, int(exclusive), 1)
+        super().server_bind()
 
 
 class EljevRequestHandler(BaseHTTPRequestHandler):
-    server_version = "eljev/0.1.0"
+    server_version = "eljev/0.2.0"
     protocol_version = "HTTP/1.1"
 
     @property
@@ -109,49 +154,100 @@ class EljevRequestHandler(BaseHTTPRequestHandler):
         except (TypeError, ValueError) as exc:
             raise InputValidationError("request body must be valid JSON") from exc
 
+    def _request_allowed(self, *, require_json: bool) -> bool:
+        if self.headers.get("Origin"):
+            self._send_json(403, {"error_kind": "forbidden", "message": "Origin header is not allowed"})
+            return False
+
+        host = (self.headers.get("Host") or "").strip().lower()
+        port = int(self.server.server_port)
+        allowed_hosts = {
+            "127.0.0.1",
+            "localhost",
+            f"127.0.0.1:{port}",
+            f"localhost:{port}",
+        }
+        if host not in allowed_hosts:
+            self._send_json(403, {"error_kind": "forbidden", "message": "Host header is not allowed"})
+            return False
+
+        if require_json:
+            content_type = (self.headers.get("Content-Type") or "").strip().lower()
+            if not content_type.startswith("application/json"):
+                self._send_json(
+                    415,
+                    {
+                        "error_kind": "invalid_input",
+                        "message": "Content-Type must start with application/json",
+                    },
+                )
+                return False
+        return True
+
     def do_GET(self) -> None:
+        if not self._request_allowed(require_json=False):
+            return
         parsed = urlsplit(self.path)
         if parsed.path == "/health":
             self._health()
-        elif parsed.path == "/v1/log":
+            return
+        if parsed.path == "/v1/log":
             values = parse_qs(parsed.query)
             try:
                 limit = int(values.get("limit", ["100"])[0])
             except ValueError:
                 limit = 100
             self._send_json(200, {"records": self.app.decision_log.read_last(max(1, min(limit, 1000)))})
-        else:
-            self._send_json(404, {"error_kind": "http", "message": "not found"})
+            return
+        self._send_json(404, {"error_kind": "http", "message": "not found"})
 
     def do_POST(self) -> None:
+        if not self._request_allowed(require_json=True):
+            return
         parsed = urlsplit(self.path)
         if parsed.path == "/v1/screen":
             self._screen()
-        elif parsed.path == "/v1/decide":
+            return
+        if parsed.path == "/v1/decide":
             self._decide()
-        else:
-            self._send_json(404, {"error_kind": "http", "message": "not found"})
+            return
+        if parsed.path == "/v1/shutdown":
+            self._shutdown()
+            return
+        self._send_json(404, {"error_kind": "http", "message": "not found"})
 
     def _health(self) -> None:
+        policy = config.coverage_policy()
+        calibration_version = "none"
+        if policy == "calibrated":
+            params, _ = calibration_for(load_calibration(), "screen")
+            if params is not None:
+                calibration_version = str(params["calibration_version"])
+        passthrough = bool(os.environ.get("ELJEV_SYSTEMONE_URL", "").strip())
+        systemone_mode = "passthrough" if passthrough else "cohere" if self.app.cohere.endpoint else "heuristic"
         self._send_json(
             200,
             {
                 "status": "ok",
                 "version": VERSION,
                 "schema": SCHEMA,
+                "pid": os.getpid(),
                 "engines": {
                     "cohere": "ready" if self.app.cohere.endpoint else "absent",
-                    "local": "ready"
-                    if (self.app.systemone.passthrough_url or self.app.cohere.endpoint)
-                    else "heuristic",
+                    "systemone": systemone_mode,
                 },
-                "calibration_version": "none",
-                "coverage_policy": os.environ.get(
-                    "ELJEV_COVERAGE_POLICY", "always_abstain_v0"
-                ),
+                "calibration_version": calibration_version,
+                "coverage_policy": policy,
+                "auth": config.auth_mode(),
+                "warm": bool(self.app.last_warm_ok),
                 "uptime_s": round(time.monotonic() - self.app.started_at, 3),
             },
         )
+
+    def _shutdown(self) -> None:
+        pid = os.getpid()
+        self._send_json(200, {"status": "stopping", "pid": pid})
+        threading.Thread(target=self.app.shutdown, daemon=True).start()
 
     def _screen(self) -> None:
         started = time.perf_counter()
@@ -174,7 +270,7 @@ class EljevRequestHandler(BaseHTTPRequestHandler):
         candidates = validated.candidates
         pregate_result = check_pregate(candidates)
         pregate_end = time.perf_counter()
-        policy = os.environ.get("ELJEV_COVERAGE_POLICY", "always_abstain_v0")
+        policy = config.coverage_policy()
         if pregate_result.trivial:
             record = DecisionRecord(
                 shape="screen",
@@ -232,7 +328,7 @@ class EljevRequestHandler(BaseHTTPRequestHandler):
                 criterion=validated.criterion,
                 n_candidates=len(candidates),
                 tier_path=["pregate", "cohere"],
-                engine="cohere-rerank-v4.0-pro",
+                engine=config.cohere_deployment(),
                 status="engine_error",
                 exit_code=2,
                 error_kind="daemon_unavailable",
@@ -259,7 +355,7 @@ class EljevRequestHandler(BaseHTTPRequestHandler):
                 criterion=validated.criterion,
                 n_candidates=len(candidates),
                 tier_path=["pregate", "cohere"],
-                engine="cohere-rerank-v4.0-pro",
+                engine=config.cohere_deployment(),
                 status="invalid_response" if malformed else "engine_error",
                 exit_code=2,
                 error_kind=exc.error_kind,
@@ -287,7 +383,7 @@ class EljevRequestHandler(BaseHTTPRequestHandler):
             criterion=validated.criterion,
             n_candidates=len(candidates),
             tier_path=["pregate", "cohere"],
-            engine="cohere-rerank-v4.0-pro",
+            engine=config.cohere_deployment(),
             choice=verdict["choice"],
             choice_index=verdict["choice_index"],
             status=verdict["status"],
@@ -309,35 +405,90 @@ class EljevRequestHandler(BaseHTTPRequestHandler):
         self._send_json(200, record.to_dict())
 
     def _decide(self) -> None:
+        started = time.perf_counter()
+        engine_started = started
         try:
             payload = self._read_json()
             if not isinstance(payload, Mapping):
                 raise InputValidationError("request body must be an object")
             state = payload.get("state")
             question = payload.get("question")
-            if not isinstance(state, (str, Mapping, list)) or (isinstance(state, str) and not state.strip()):
-                raise InputValidationError("state must be a non-empty string or JSON object")
+            if isinstance(state, str):
+                state_ok = bool(state.strip())
+            else:
+                state_ok = isinstance(state, (dict, list))
+            if not state_ok:
+                raise InputValidationError("state must be a non-empty string or JSON object/array")
             if not isinstance(question, Mapping):
                 raise InputValidationError("question must be an object")
-            question_id = question.get("id")
-            question_kind = (question.get("kind") or question.get("type") or "").lower()
-            if not isinstance(question_id, str) or not question_id:
-                raise InputValidationError("question.id must be a non-empty string")
-            if question_kind not in {"choice", "noul", "score"}:
+            kind = str(question.get("kind") or question.get("type") or "").strip().lower()
+            if kind not in {"choice", "noul", "score"}:
                 raise InputValidationError("question.kind must be choice, noul, or score")
-            if question_kind == "choice" and not isinstance(question.get("options"), list) and not isinstance(question.get("criteria"), Mapping):
-                raise InputValidationError("choice questions must contain an options list or criteria mapping")
-            if question_kind == "score" and not isinstance(question.get("criteria"), Sequence):
-                raise InputValidationError("score questions must contain a criteria list")
-            result = self.app.systemone.decide(state, question)
+            engine_started = time.perf_counter()
+            with self.app.engine_gate:
+                result = self.app.systemone.decide(state, question)
+            engine_ended = time.perf_counter()
             self.app.decision_log.append(result)
+            self._send_json(200, result)
+            return
         except InputValidationError as exc:
-            self._send_json(400, {"error_kind": "invalid_input", "message": str(exc), "exit_code": 1})
+            self._send_json(
+                400,
+                {"error_kind": "invalid_input", "message": str(exc), "exit_code": 1},
+            )
             return
         except SystemOneError as exc:
-            self._send_json(502, {"error_kind": exc.error_kind, "message": str(exc)})
+            engine_ended = time.perf_counter()
+            if exc.error_kind == "invalid_input":
+                self._send_json(
+                    400,
+                    {"error_kind": "invalid_input", "message": str(exc), "exit_code": 1},
+                )
+                return
+            question = payload.get("question") if isinstance(payload, Mapping) else {}
+            question_id = str(question.get("id") or "q1") if isinstance(question, Mapping) else "q1"
+            kind = (
+                str(question.get("kind") or question.get("type") or "choice")
+                if isinstance(question, Mapping)
+                else "choice"
+            )
+            record = DecisionRecord(
+                shape="decide",
+                criterion=str(question.get("instructions") or question.get("description") or "")
+                if isinstance(question, Mapping)
+                else "",
+                n_candidates=0,
+                tier_path=["systemone", "cohere"],
+                engine=config.cohere_deployment()
+                if self.app.cohere.endpoint
+                else "local_heuristic",
+                choice=None,
+                choice_index=None,
+                status="engine_error",
+                exit_code=2,
+                calibration_version="none",
+                coverage_policy=config.coverage_policy(),
+                elapsed_ms=_elapsed(started, started, engine_started, engine_ended),
+                error_kind=exc.error_kind,
+                notes=[str(exc)],
+            )
+            body = record.to_dict()
+            body.update(
+                {
+                    "question_id": question_id,
+                    "kind": kind,
+                    "confidence": None,
+                    "probabilities": None,
+                    "margin": None,
+                    "noul": None,
+                    "score": None,
+                }
+            )
+            self.app.decision_log.append(body)
+            self._send_json(200, body)
             return
-        self._send_json(200, result)
+        except Exception:
+            self._send_json(500, {"error_kind": "internal", "message": "internal server error"})
 
 
 def create_server(
@@ -353,10 +504,45 @@ def create_server(
     return EljevHTTPServer((DEFAULT_HOST, bind_port), EljevRequestHandler)
 
 
-def run(host: str | None = None, port: int | None = None) -> None:
-    server = create_server(host, port)
+def _run_warm_loop(server: EljevHTTPServer) -> None:
+    while not server._warm_stop.is_set():
+        try:
+            server.last_warm_ok = bool(server.cohere.warm())
+        except Exception:
+            server.last_warm_ok = False
+        server._warm_stop.wait(WARM_INTERVAL_S)
+
+
+def run(host: str | None = None, port: int | None = None) -> int:
     try:
+        server = create_server(host, port)
+    except OSError:
+        return 3
+
+    pid = os.getpid()
+    pid_path = config.pidfile_path()
+    _write_pidfile(pid_path, pid, int(server.server_port))
+
+    def shutdown_from_signal(signum: int, frame: Any) -> None:
+        del signum, frame
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    try:
+        for signal_name in ("SIGTERM", "SIGBREAK"):
+            sig = getattr(signal, signal_name, None)
+            if sig is None:
+                continue
+            try:
+                signal.signal(sig, shutdown_from_signal)
+            except Exception:
+                continue
+
+        warm_thread = threading.Thread(target=_run_warm_loop, args=(server,), daemon=True)
+        warm_thread.start()
         server.serve_forever()
+        return 0
     finally:
+        server._warm_stop.set()
         server.cohere.close()
         server.server_close()
+        _remove_pidfile_if_owner(pid_path, pid)

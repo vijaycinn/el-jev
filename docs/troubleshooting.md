@@ -1,99 +1,106 @@
 # Troubleshooting
 
-## Daemon will not start
+## `daemon_unavailable` or `daemon_starting`
 
-Start it from the repository environment:
+`daemon_unavailable` means the caller could not reach the local daemon.
+`daemon_starting` means daemon process exists but is not yet ready.
 
 ```powershell
-eljev daemon start
+python -m eljev daemon status
+python -m eljev daemon start
 ```
 
-Then check:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8787/health | ConvertTo-Json
+```bash
+python -m eljev daemon status
+python -m eljev daemon start
 ```
 
-Expected health includes `status: "ok"` and `schema: "eljev.decision/1"`.
-Confirm that `ELJEV_HOST` is `127.0.0.1` and that `ELJEV_PORT` is the port
-you are checking. Do not bind the daemon to `0.0.0.0`.
+## Port already in use
 
-If health reports `starting`, wait briefly and retry. If the start command
-reports an existing process but health never becomes ready, inspect the
-pidfile under `.eljev\`. Remove it only after confirming that its process no
-longer exists. A live process and its pidfile must not be disrupted.
-
-## `daemon_unavailable`
-
-This is a local transport error: the caller could not reach the daemon. It is
-not a model verdict and does not mean that a candidate was rejected. Start or
-repair the daemon, then retry. Keep host authorization and execution paused.
-
-## 401 or 403 from Azure
-
-The verified resource uses Entra bearer authentication. It has
-`disableLocalAuth: true`, so API-key auth fails with
-`AuthenticationTypeDisabled`.
-
-Check the signed-in tenant and token:
+Daemon uses exclusive loopback bind. A second daemon exits with code 3 if the port is occupied.
 
 ```powershell
+python -m eljev daemon status
+python -m eljev daemon stop
+```
+
+```bash
+python -m eljev daemon status
+python -m eljev daemon stop
+```
+
+## Orphan daemon process
+
+`eljev daemon stop` also checks `/health` pid and can stop orphaned daemons even when pidfile is stale.
+If stop succeeds but status still shows running, retry `daemon stop` once and re-check.
+
+## `engine_error` with `error_kind: auth`
+
+Most common causes:
+
+1. Missing `az login`.
+2. Missing **Cognitive Services User** role on resource.
+3. Role assignment not propagated yet (~5 minutes).
+
+```powershell
+az login
 az account show
-az account get-access-token --scope https://ai.azure.com/.default -o tsv
 ```
 
-The identity needs **Cognitive Services User** at the **Azure AI Foundry
-resource** scope. Owner or Contributor alone does not grant inference.
-Never log or paste the token.
+```bash
+az login
+az account show
+```
 
-## 404 from the rerank endpoint
+If resource has `disableLocalAuth` enabled, API keys are never accepted.
 
-Use exactly:
+## 401 with "invalid subscription key or wrong API endpoint"
+
+This can appear even with bearer-token usage when:
+
+- Role assignment is missing.
+- Token is malformed (for example, tab-separated output copied from `az ... -o tsv` with extra fields).
+
+Validate token retrieval and endpoint format carefully.
+
+## 400 "Token tenant ... does not match resource tenant"
+
+The `az` default account belongs to a different tenant than the Foundry resource (common when you are signed in to several accounts). Pin the resource's subscription so el-jev mints tokens with the right account, then restart the daemon:
 
 ```text
-POST {endpoint}/providers/cohere/v2/rerank
+python -m eljev configure --subscription <subscription-id>
+python -m eljev daemon stop
+python -m eljev daemon start
 ```
 
-There is no `api-version` query parameter. These unprefixed paths return 404
-on the verified deployment:
+`--subscription` selects both the signed-in account and its tenant. Passing only a tenant is not enough, because `az` would still use the default user.
 
-- `/v1/rerank`
-- `/v2/rerank`
-- `/models/rerank`
+## 404 from Cohere route
 
-Also confirm that `ELJEV_COHERE_ENDPOINT` contains only the host, for example
-`https://<resource>.services.ai.azure.com`.
-
-## 429 quota response
-
-The verified deployment has a quota of 150 requests per 60 seconds and
-150,000 tokens per 60 seconds. A 50-candidate request with approximately
-2,000-character candidates is about 25,000 tokens, or roughly six calls per
-minute before token throttling.
-
-Honor `Retry-After`. Retry only 408, 409, 429, and 5xx responses within the
-single deadline. Do not retry connection resets, TLS errors, or parse
-failures; a resend can double-bill a paid request.
-
-## Stale pidfile
-
-1. Read the pidfile path under `.eljev\`.
-2. Check whether that exact process ID is still running.
-3. If it is not running, remove only that stale pidfile.
-4. Start the daemon and verify `/health`.
-
-Do not kill processes by name and do not remove a pidfile for an active
-daemon.
-
-## Malformed provider output
-
-The client must return:
+Use:
 
 ```text
-status: invalid_response
-error_kind: malformed
-exit_code: 2
+POST https://<resource>.services.ai.azure.com/providers/cohere/v2/rerank
 ```
 
-It must fail closed, avoid selecting a candidate, and avoid printing provider
-payloads that may contain secrets.
+Do not use `/v1/rerank`, `/v2/rerank`, or `/models/rerank`.
+
+## Hook adds nothing
+
+Check:
+
+1. `EL_JEV` effective value and source (`python -m eljev status`).
+2. Hook mode (`intent` vs `marker`).
+3. Prompt length and `ELJEV_HOOK_MIN_WORDS`.
+4. Hook logs at `.eljev/logs/hook.jsonl`.
+
+## Daemon returns 403 or 415
+
+Custom clients must:
+
+- send `Host: 127.0.0.1[:port]` or `localhost[:port]`
+- send `Content-Type: application/json` on POST
+- send no `Origin` header
+
+Otherwise daemon rejects the request by design.
+

@@ -1,287 +1,303 @@
-# el-jev — Fast System One Decision Sidecar for Copilot CLI
+# el-jev
 
-`el-jev` is a high-speed, typed decision sidecar and pre-turn hook for **GitHub Copilot CLI**. It provides Kahneman "System 1" thinking (calibrated, instinctive decisioning in <200ms) to replace slow, multi-turn LLM reasoning loops.
+`el-jev` is a fast typed-decision sidecar and Copilot CLI pre-turn hook that mimics TypeSafe AI Jev decision primitives (**choice**, **noul**, **score**) on Azure AI Foundry Cohere. It is designed for auditable abstention first: by default, non-trivial decisions stay advisory until calibration is fitted on labelled data.
 
-Built to mimic **TypeSafeAI Jev**, `el-jev` runs on an enterprise-compliant **Azure AI Foundry** Cohere text classification/reranking deployment using keyless **Microsoft Entra ID** authentication (or Managed Identity).
+## Architecture
 
----
+- 🌐 [Interactive system schematic](docs/architecture.html)
+- 🌐 [Interactive decisioning flow](docs/decisioning-flow.html)
+- 📖 [Architecture deep dive](docs/architecture.md)
 
-## Architecture Schematics
-
-Interactive schematics generated using the **Archify** visual engine:
-
-- 🌐 [Interactive System Topology Schematic (`docs/architecture.html`)](docs/architecture.html)
-- 🌐 [Interactive Decisioning Flow & Dual Gate (`docs/decisioning-flow.html`)](docs/decisioning-flow.html)
-- 📖 [Full Architectural Deep Dive (`docs/architecture.md`)](docs/architecture.md)
-
-### System Setup & Azure Foundry Integration
 <p align="center">
-  <img src="docs/architecture-schematic.png" alt="el-jev Architecture & Azure Foundry Integration" width="100%">
+  <img src="docs/architecture-schematic.png" alt="el-jev architecture schematic" width="100%">
 </p>
 
-### Decisioning Flow & Dual Gate Inner Wiring
 <p align="center">
-  <img src="docs/decisioning-flow.png" alt="el-jev Decisioning & Dual-Gate Inner Wiring" width="100%">
+  <img src="docs/decisioning-flow.png" alt="el-jev decisioning flow" width="100%">
 </p>
 
-```text
-+-----------------------------------------------------------------------------------+
-|  Developer Workstation (Windows / macOS / Linux)                                  |
-|                                                                                   |
-|  [Developer] ---> [Pre-Turn Hook] -------------------> [Copilot LLM]             |
-|   (Prompt)        (userPromptTransformed)             (Injected Verdict)          |
-|                          |                                   |                    |
-|             checks state |                                   |                    |
-|                   [EL_JEV Switch]                            |                    |
-|                   (Env: ON | OFF)                            v                    |
-|                          |                            [Instant Action]            |
-|                          v                                                        |
-|                 [el-jev Daemon]                                                   |
-|                 (127.0.0.1:8787)                                                  |
-|                          |                                                        |
-|                          v                                                        |
-|                 [System One Engine]                                               |
-|                 (Choice, Noul, Score)                                             |
-+--------------------------|--------------------------------------------------------+
-                           |  HTTPS TLS (Entra Bearer Token)
-                           v
-+-----------------------------------------------------------------------------------+
-|  Azure AI Foundry Cloud Environment                                               |
-|                                                                                   |
-|  [Microsoft Entra ID] -----> [RBAC Role Gate]                                     |
-|  (scope: ai.azure.com)       (Cognitive Services User / Managed Identity)         |
-|                                      |                                            |
-|                                      v                                            |
-|                           [AI Services Gateway]                                   |
-|                           (services.ai.azure.com)                                 |
-|                                      |                                            |
-|                                      v                                            |
-|                           [Cohere Model Deployment]                               |
-|                           (Cohere-rerank-v4.0-pro ~175ms p50)                     |
-+-----------------------------------------------------------------------------------+
+## What changed in v0.2.0
+
+- Added unified runtime config resolution (`env > config.json > defaults`) with repo-local state in `.eljev/`.
+- Added `eljev configure`, `install-hook`, `uninstall-hook`, `on`, `off`, and richer daemon lifecycle commands.
+- Added built-in Shape A Cohere-backed `choice | noul | score` decisions with fail-closed engine handling.
+- Added single shared gate (`apply_gate`) for all shapes with calibration-driven thresholds.
+- Hardened loopback daemon against browser/DNS-rebinding style abuse (`Origin`, `Host`, `Content-Type` checks).
+
+See [docs/v2-plan.md](docs/v2-plan.md) and [CHANGELOG.md](CHANGELOG.md) for details.
+
+## Measured latency (single machine)
+
+These are single-machine measurements from 2026-09-24 and 2026-09-30, not cross-environment SLAs.
+
+| Measurement | Result |
+|---|---:|
+| Cohere rerank warm p50 (common flows) | ~175-183 ms |
+| Reused connection mean vs fresh connection mean | 245 ms vs 764 ms |
+| Warm daemon loopback round trip | ~1.8 ms |
+| Cold CLI process startup path | ~700 ms |
+| Hook, end to end per Copilot turn via the Windows PowerShell hook runner (v0.2.0, 2026-09-30) | ~1.4-1.6 s |
+| - of which PowerShell start for the hook command | ~0.65 s |
+| - of which Python interpreter start for the hook process | ~0.55 s |
+| - of which intent decision in the warm daemon | ~0.15-0.35 s typical |
+| Cohere tail latency above the 500 ms hook budget | observed (e.g. 685 ms); that turn fails open |
+| First decision after daemon start | ~0.7 s; exceeds the 500 ms hook budget, so that turn fails open |
+
+The hook runs as a new process on every Copilot turn, so process start-up, not the decision, is most of its cost. On this machine the hook adds roughly 1.5 s per turn. Use `hook_mode=marker` (only explicit requests) or `EL_JEV=OFF` when that per-turn cost is not worth the advisory, and raise `ELJEV_HOOK_TIMEOUT_MS` if you prefer fewer fail-opens over lower worst-case latency.
+
+## Azure prerequisites
+
+1. Create or use an Azure AI Foundry / AI Services resource.
+2. Deploy `Cohere-rerank-v4.0-pro` (or `Cohere-rerank-v4.0-fast`).
+3. Use keyless auth (Entra token scope `https://ai.azure.com/.default`).
+4. Assign **Cognitive Services User** at resource scope.
+
+```powershell
+az role assignment create `
+  --role "Cognitive Services User" `
+  --assignee "<user-or-principal-id>" `
+  --scope "/subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/Microsoft.CognitiveServices/accounts/<your-resource>"
 ```
-
----
-
-## Measured Performance & Efficacy
-
-Measured live against Azure AI Foundry `Cohere-rerank-v4.0-pro` in `southcentralus`:
-
-| Decision Type | Operation | Live p50 Latency | Accuracy / Confidence |
-|---|---|---:|---|
-| **Shape A (`choice`)** | Multi-class intent & routing triage | **174.7 ms** | **96.8% - 98.6%** |
-| **Shape A (`noul`)** | Binary yes/no policy & safety gates | **181.2 ms** | **95.7%** true prob |
-| **Shape B (`screen`)** | Open candidate ranking (up to 250) | **183.0 ms** | Ranked relevance |
-| **Local Fallback** | Offline token overlap heuristic | **< 2.0 ms** | Zero network deps |
-| **Warm Daemon** | Local loopback round trip | **1.8 ms** | Kept-alive connection |
-
----
-
-## Decision Gating & LLM Escalation (When to Act vs Proceed to LLM)
-
-### How Decisioning & Confidence Gating Works
-`el-jev` uses a statistical **Dual Gate** before determining whether code can act immediately on a decision or must escalate to full LLM generative reasoning:
-
-1. **Probability Floor:** Calibrated top-choice probability must meet or exceed a threshold ($P(\text{top}) \ge \tau$, typically $\ge 60\%-80\%$).
-2. **Margin Separation:** The margin between top-1 and runner-up must meet a minimum clearance ($P(\text{top}) - P(\text{runner-up}) \ge \Delta$, typically $\ge 10\%-15\%$).
-
-A single-score check is insufficient because models can bunch scores tightly across candidates. The margin term provides the decisive confidence separation.
-
-### The Stop vs. Proceed Matrix
-
-| Exit Code | Status | Meaning | Copilot Action / LLM Directive |
-|---|---|---|---|
-| **`0`** | `selected` | **Dual Gate Passed:** High confidence and clear margin separation. | **Act immediately.** Bypass slow autoregressive LLM thinking loops. |
-| **`2`** | `needs_review` | **Uncertain / Low Margin:** Narrow margin ($<\Delta$) or low confidence. | **Proceed to LLM.** Trigger full generative reasoning to evaluate broader context. |
-| **`2`** | `abstain_tie` | **Exact Score Tie:** Top two candidate scores are equal. | **Abstain & Fallback:** LLM or human must review ambiguity. |
-| **`2`** | `trivial` | **Local Pre-gate Short-circuit:** Empty or single-choice prompt. | **Pass-through:** Normal host execution continues. |
-| **`2`** | `engine_error` | **Transport/Timeout/Auth Failure:** Downstream service unreachable. | **Fail-Open:** Host proceeds directly to LLM with zero disruption. |
-| **`1`** | `invalid_input` | **Contract Hard Violation:** Malformed JSON, cap breach (>250 candidates). | **Reject:** Immediate client error before model invocation. |
-
-### What Happens if Decisioning is Wrong or Needs Deeper Context?
-
-- **Advisory Sidecar Posture:** `el-jev` advises; host code and Copilot retain full execution control. `el-jev` never directly executes mutations, writes files, or triggers deployments.
-- **Fail-Open by Design:** Any uncertain verdict, network timeout, rate limit (HTTP 429), or authentication blip emits `status: needs_review` (exit 2) or `{}` within milliseconds, ensuring prompt execution is never blocked.
-- **LLM Override Authority:** The Copilot LLM receives the `[el-jev decision]` block as prior evidence in its prompt context. If multi-turn conversation history, external documentation, or nuanced edge cases contradict the classifier, the LLM naturally overrides the verdict and reasons through the problem using its full parameter capacity.
-
----
-
-## Azure AI Foundry Prerequisites (One-Time Setup)
-
-`el-jev` uses **keyless authentication** with Microsoft Entra ID. No API keys are stored or transmitted.
-
-### 1. Deploy the Cohere Model in Azure AI Foundry
-1. Open the [Azure AI Foundry Portal](https://ai.azure.com) (or Azure Portal Cognitive Services).
-2. Create or select an **AI Services** or **Foundry Hub** resource (e.g. in `southcentralus` or `eastus2`).
-3. Deploy model: **`Cohere-rerank-v4.0-pro`** (Deployment Name: `Cohere-rerank-v4.0-pro`).
-
-### 2. Grant RBAC Role (`Cognitive Services User`)
-Your developer user account or Managed Identity must have the **`Cognitive Services User`** role on the resource:
 
 ```bash
 az role assignment create \
   --role "Cognitive Services User" \
-  --assignee "<your-email@domain.com-or-principal-id>" \
-  --scope "/subscriptions/<sub-id>/resourceGroups/<rg-name>/providers/Microsoft.CognitiveServices/accounts/<resource-name>"
+  --assignee "<user-or-principal-id>" \
+  --scope "/subscriptions/<subscription-id>/resourceGroups/<resource-group>/providers/Microsoft.CognitiveServices/accounts/<your-resource>"
 ```
 
-*Note: For Azure VMs or CI/CD agents, enable System-Assigned Managed Identity and assign the role to the VM's principal ID.*
+Managed identity is supported for VM/App Service/Container App. Set `--auth managed_identity` and set `AZURE_CLIENT_ID` when using a user-assigned identity. Role assignment propagation can take about five minutes.
 
----
+If you are signed in to more than one Azure account, pin the subscription that owns the Foundry resource so tokens always come from the right account, whatever your `az` default is: `python -m eljev configure --subscription <subscription-id>`. Without it, a different default account yields `400 Token tenant ... does not match resource tenant`.
 
-## Peer Setup Instructions
-
-### On PC (Windows 11 / Windows 10)
+## Quick start
 
 ```powershell
-# 1. Clone repository
 git clone https://github.com/vijaycinn/el-jev.git
 Set-Location .\el-jev
-
-# 2. Install editable package (standard library only on runtime path)
 python -m pip install -e .
-
-# 3. Configure environment variables (or set as User Account Env Variable)
-$env:EL_JEV = "ON"
-$env:ELJEV_COHERE_ENDPOINT = "https://<your-resource>.services.ai.azure.com"
-$env:ELJEV_COHERE_DEPLOYMENT = "Cohere-rerank-v4.0-pro"
-
-# 4. Sign in to Azure CLI (Entra ID token minting)
 az login
-
-# 5. Start resident daemon
+python -m eljev configure --endpoint https://<your-resource>.services.ai.azure.com
 python -m eljev daemon start
-
-# Verify status
 python -m eljev status
+python -m eljev install-hook --scope user
+# Repo-scoped hook alternative:
+# python -m eljev install-hook --scope repo --repo <path-to-repo>
 ```
-
-### On Mac (macOS) & Linux
 
 ```bash
-# 1. Clone repository
 git clone https://github.com/vijaycinn/el-jev.git
 cd el-jev
-
-# 2. Install package
-pip install -e .
-
-# 3. Add environment configuration to ~/.zshrc or ~/.bashrc
-export EL_JEV="ON"
-export ELJEV_COHERE_ENDPOINT="https://<your-resource>.services.ai.azure.com"
-export ELJEV_COHERE_DEPLOYMENT="Cohere-rerank-v4.0-pro"
-
-# 4. Sign in to Azure CLI
+python -m pip install -e .
 az login
-
-# 5. Start daemon
+python -m eljev configure --endpoint https://<your-resource>.services.ai.azure.com
 python -m eljev daemon start
-
-# Verify status
 python -m eljev status
+python -m eljev install-hook --scope user
+# Repo-scoped hook alternative:
+# python -m eljev install-hook --scope repo --repo <path-to-repo>
 ```
 
----
+Verify with a direct typed decision:
 
-## Copilot CLI Integration (Pre-Turn Hook)
+```powershell
+@'
+{
+  "id": "route-next-step",
+  "kind": "choice",
+  "instructions": "Pick the best next action",
+  "options": [
+    {"id":"reply","description":"Reply now with details"},
+    {"id":"schedule","description":"Schedule a follow-up meeting"},
+    {"id":"delegate","description":"Delegate to the owner"}
+  ]
+}
+'@ | Set-Content -Path .\question.choice.json
+python -m eljev decide --state-text "Customer asked for ETA and owner details." --question .\question.choice.json
+```
 
-To enable automatic decisioning on every Copilot CLI turn:
+```bash
+cat > question.choice.json <<'JSON'
+{
+  "id": "route-next-step",
+  "kind": "choice",
+  "instructions": "Pick the best next action",
+  "options": [
+    {"id":"reply","description":"Reply now with details"},
+    {"id":"schedule","description":"Schedule a follow-up meeting"},
+    {"id":"delegate","description":"Delegate to the owner"}
+  ]
+}
+JSON
+python -m eljev decide --state-text "Customer asked for ETA and owner details." --question ./question.choice.json
+```
 
-### Option A: Repository Hook (Project Specific)
-Add `.github/hooks/eljev.json` in your repository:
+## Turning el-jev on and off
+
+| Control | PowerShell | bash |
+|---|---|---|
+| User-level switch OFF | `[System.Environment]::SetEnvironmentVariable("EL_JEV","OFF","User")` | Add `export EL_JEV=OFF` to your shell profile |
+| User-level switch ON | `[System.Environment]::SetEnvironmentVariable("EL_JEV","ON","User")` | `export EL_JEV=ON` |
+| Runtime toggle | `python -m eljev off` / `python -m eljev on` | `python -m eljev off` / `python -m eljev on` |
+| Status | `python -m eljev status` | `python -m eljev status` |
+| Copilot session override | `.\scripts\copilot.ps1 -NoJev` or `.\scripts\copilot.ps1 -WithJev` | n/a |
+
+`eljev on/off` persists `enabled` in config, then reports the effective value and source. If an env var overrides config, status output calls that out.
+
+## Hook modes
+
+`ELJEV_HOOK_MODE` / `hook_mode` supports:
+
+- `intent` (default): for prompts with at least `ELJEV_HOOK_MIN_WORDS` words (default 4), classify into a **choice** over five intents: `code_modification`, `review_audit`, `investigation_search`, `execution_testing`, `advisory_explanation`.
+- `marker`: only act on explicit `<!--eljev.request:{...}-->` markers or `eljev.hook/1` payloads.
+
+Hook timeout defaults to `ELJEV_HOOK_TIMEOUT_MS=500`. If daemon is down, the hook attempts one debounced spawn and returns `{}` immediately. Only `selected`, `needs_review`, and `abstain_tie` decisions inject advisory text.
+
+Example injected block:
+
+```text
+[el-jev advisory]
+kind: choice | decision: review_audit | confidence: 0.70 | margin: 0.58
+gate: needs_review (exit 2) -> treat as a hint; reason normally
+probabilities: review_audit=0.698, investigation_search=0.117, code_modification=0.086
+[/el-jev advisory]
+```
+
+## Decision gating and exit behavior
+
+`el-jev` applies one gate function for every shape.
+
+| Status | Exit | Meaning |
+|---|---:|---|
+| `selected` | 0 | Calibrated gate passed for that kind. |
+| `needs_review` | 2 | Advisory outcome, including default policy abstention. |
+| `abstain_tie` | 2 | Exact top/runner-up tie. |
+| `trivial` | 2 | Pregate short-circuit. |
+| `engine_error` | 2 | Remote engine failed; decision stays advisory. |
+| `invalid_response` | 2 | Malformed engine output; fail closed. |
+| `invalid_input` | 1 | Contract/input validation error. |
+
+Default policy is `always_abstain_v0`, so non-trivial decisions are advisory (`exit 2`). Exit `0` requires `coverage_policy=calibrated` and valid calibration for the request kind.
+
+Example calibration file:
 
 ```json
 {
-  "version": 1,
-  "hooks": {
-    "userPromptTransformed": [
-      {
-        "type": "command",
-        "powershell": "python <path-to-el-jev>/hooks/eljev_pre_turn.py",
-        "bash": "python /path/to/el-jev/hooks/eljev_pre_turn.py",
-        "timeoutSec": 2
-      }
-    ]
+  "calibration_version": "cal-2026-10-01",
+  "temperature": 1.0,
+  "threshold": 0.8,
+  "margin_threshold": 0.2,
+  "kinds": {
+    "choice": {
+      "calibration_version": "cal-choice-1",
+      "temperature": 0.05,
+      "threshold": 0.8,
+      "margin_threshold": 0.3
+    },
+    "noul": {
+      "calibration_version": "cal-noul-1",
+      "temperature": 0.05,
+      "threshold": 0.85,
+      "margin_threshold": 0.4
+    }
   }
 }
 ```
 
-### Option B: User-Level Hook (All Repositories)
-Place the file at:
-- **Windows:** `C:\Users\<user>\.copilot\hooks\eljev.json`
-- **Mac/Linux:** `~/.copilot/hooks/eljev.json`
+## CLI usage examples
 
-Once configured, Copilot CLI intercepts prompts before the model generation turn and injects calibrated verdicts:
-- **Yes/No / Safety Questions** (`should I deploy?`, `is this safe?`) -> Evaluated by **Noul** gate.
-- **Action / Task Requests** (`review...`, `fix...`, `find...`) -> Classified by **Choice** intent router.
-- **Trivial Greetings** (`hi`, `ok`, `thanks`) -> Fail open in <1 ms with zero overhead.
+Choice:
 
----
-
-## Controlling el-jev (`EL_JEV` Switch)
-
-You can toggle `el-jev` at any time without restarting terminals:
-
-### 1. User Environment Variable (Recommended)
-Set `EL_JEV` to `ON` or `OFF`:
-- Windows: `[System.Environment]::SetEnvironmentVariable("EL_JEV", "OFF", "User")`
-- Mac/Linux: `export EL_JEV=OFF`
-
-### 2. CLI Toggle Commands
-```bash
-python -m eljev off    # Disables automatic routing and stops daemon
-python -m eljev on     # Re-enables routing and starts daemon
-python -m eljev status # Displays current status
-```
-
-### 3. Single-Session Override
 ```powershell
-$env:ELJEV_ENABLED = "0"; copilot
+python -m eljev decide --state-text "PR adds migration and new API." --question .\question.choice.json
 ```
 
----
-
-## Using el-jev CLI Directly
-
-You can also run typed decisions directly from terminal or scripts:
-
-### Shape A: Choice Decision
 ```bash
-# question.json:
-# {"id": "route", "kind": "choice", "instructions": "Pick action", "criteria": {"merge": "Ready", "reject": "Has bugs"}}
-
-python -m eljev decide --state-text "PR #42 fixes all unit tests" --question question.json
+python -m eljev decide --state-text "PR adds migration and new API." --question ./question.choice.json
 ```
 
-### Shape A: Noul Gate (Yes / No)
+Noul (`criteria` is optional; supply it to describe what true/false mean):
+
+```json
+{
+  "id": "deploy-gate",
+  "kind": "noul",
+  "instructions": "Is this safe to deploy now?",
+  "criteria": {"true": "Tests pass and the change is low risk", "false": "Risky, untested, or blocking issues remain"}
+}
+```
+
+Score (`criteria` is an ordered list of 2–10 levels, lowest first; the record's `score` is the expected 1-based level):
+
+```json
+{
+  "id": "severity",
+  "kind": "score",
+  "instructions": "Rate incident severity",
+  "criteria": ["minor user impact", "degraded feature", "major degradation", "critical outage"]
+}
+```
+
+Screen:
+
+```powershell
+python -m eljev screen --criterion "most urgent customer issue today" --candidates .\candidates.json --top-n 3
+```
+
 ```bash
-# noul.json:
-# {"id": "gate", "kind": "noul", "instructions": "Is this safe to deploy to production?"}
-
-python -m eljev decide --state-text "Staging tests passed with 100% code coverage" --question noul.json
+python -m eljev screen --criterion "most urgent customer issue today" --candidates ./candidates.json --top-n 3
 ```
 
-### Shape B: Candidate Screening (Rerank)
-```bash
-python -m eljev screen --criterion "which bug is most urgent to fix" --candidates bugs.json --top-n 3
+## Observability
+
+- State dir: `<repo>/.eljev/` (override `ELJEV_DIR`).
+- Decision log: `<ELJEV_DIR>/logs/decisions.jsonl`.
+- Hook log: `<ELJEV_DIR>/logs/hook.jsonl` (no prompt text).
+- Tail local records: `python -m eljev log 20`.
+- Disable local logging: `ELJEV_LOGGING=OFF` (legacy: `ELJEV_NO_LOG=1`).
+- Azure Foundry usage and cost are visible in Azure metrics; decision-level context remains local in `decisions.jsonl`.
+
+## Configuration reference
+
+Resolution order is **environment variable > `config.json` > default**.
+
+| Setting | Env var | config.json key | Default |
+|---|---|---|---|
+| on/off switch | `EL_JEV` (ON/OFF), then `ELJEV_ENABLED`, then Windows user env `EL_JEV` from `HKCU\Environment` | `enabled` | ON |
+| Cohere endpoint | `ELJEV_COHERE_ENDPOINT` | `cohere_endpoint` | none (required for Cohere) |
+| deployment | `ELJEV_COHERE_DEPLOYMENT` | `cohere_deployment` | `Cohere-rerank-v4.0-pro` |
+| gate policy | `ELJEV_COVERAGE_POLICY` | `coverage_policy` | `always_abstain_v0` |
+| auth | `ELJEV_AUTH` | `auth` | `azcli` |
+| az token subscription | `ELJEV_AZURE_SUBSCRIPTION` | `subscription` | unset (az default account) |
+| hook mode | `ELJEV_HOOK_MODE` | `hook_mode` | `intent` |
+| calibration file | `ELJEV_CALIBRATION_PATH` | — | `<repo>/eval/calibration.json` |
+| logging | `ELJEV_LOGGING` (ON/OFF) | — | ON |
+| log dir | `ELJEV_LOG_DIR` | — | `<ELJEV_DIR>/logs` |
+| state dir | `ELJEV_DIR` | — | `<repo>/.eljev` |
+| hook timeout | `ELJEV_HOOK_TIMEOUT_MS` | — | 500 |
+| hook min words | `ELJEV_HOOK_MIN_WORDS` | — | 4 |
+| engine timeout | `ELJEV_TIMEOUT_MS` | — | 2500 |
+| redaction | `ELJEV_REDACT` | — | 1 |
+| daemon port | `ELJEV_PORT` | — | 8787 |
+| passthrough backend | `ELJEV_SYSTEMONE_URL` | — | unset |
+
+Legacy note: `ELJEV_HOOK_ENABLED` is removed from runtime control and should not be used. `ELJEV_NO_LOG=1` is still honored.
+
+## Troubleshooting
+
+See [docs/troubleshooting.md](docs/troubleshooting.md).
+
+## Tests
+
+```powershell
+python -m unittest discover -s tests
 ```
-
----
-
-## Running Tests
-
-Run the full unit and live test suite:
 
 ```bash
 python -m unittest discover -s tests
 ```
 
-To run the live Azure AI Foundry test:
-```bash
-python tests/test_live_foundry.py
-```
-
----
+Live Azure tests run only when `ELJEV_LIVE_TESTS=1` and an endpoint is configured.
 
 ## License
 

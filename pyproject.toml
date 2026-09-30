@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eljev"
-version = "0.1.0"
-description = "A fast typed-decision sidecar with auditable abstention."
+version = "0.2.0"
+description = "Fast typed-decision sidecar and Copilot CLI pre-turn hook on Azure AI Foundry Cohere, with auditable abstention."
 readme = "README.md"
 requires-python = ">=3.13"
 license = { text = "MIT" }
@@ -13,6 +13,9 @@ authors = [
   { name = "Vijay Cinnakonda" }
 ]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/vijaycinn/el-jev"
 
 [project.scripts]
 eljev = "eljev.cli:main"

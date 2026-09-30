@@ -1,13 +1,41 @@
 import math
+import os
+from pathlib import Path
+import tempfile
 import unittest
+from unittest.mock import patch
 
 from eljev.validate import normalize_candidates
-from eljev.verdict import verdict_from_engine
+from eljev.verdict import load_calibration, verdict_from_engine
 
 
 class VerdictTests(unittest.TestCase):
+    ENV_KEYS = (
+        "ELJEV_DIR",
+        "ELJEV_COVERAGE_POLICY",
+        "ELJEV_CALIBRATION_PATH",
+        "ELJEV_COHERE_ENDPOINT",
+        "ELJEV_SYSTEMONE_URL",
+        "ELJEV_AUTH",
+        "EL_JEV",
+        "ELJEV_PORT",
+    )
+
     def setUp(self):
+        self._environment = patch.dict(os.environ, {}, clear=False)
+        self._environment.start()
+        self._tempdir = tempfile.TemporaryDirectory()
+        self._clear_relevant_env()
+        os.environ["ELJEV_DIR"] = self._tempdir.name
         self.candidates = normalize_candidates([{"id": "a", "text": "A"}, {"id": "b", "text": "B"}])
+
+    def tearDown(self):
+        self._environment.stop()
+        self._tempdir.cleanup()
+
+    def _clear_relevant_env(self):
+        for key in self.ENV_KEYS:
+            os.environ.pop(key, None)
 
     def test_empty_results_fail_closed(self):
         result = verdict_from_engine({"results": []}, self.candidates)
@@ -216,6 +244,28 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(result["status"], "needs_review")
         self.assertEqual(result["exit_code"], 2)
         self.assertIn("calibrated margin below margin_threshold", result["notes"])
+
+    def test_shape_b_calibrated_uses_kinds_screen_calibration_from_file(self):
+        calibration_path = Path(self._tempdir.name) / "calibration.json"
+        calibration_path.write_text(
+            (
+                '{"kinds":{"screen":{"temperature":1.0,"threshold":0.5,'
+                '"margin_threshold":0.2,"calibration_version":"screen-v1"}}}'
+            ),
+            encoding="utf-8",
+        )
+        os.environ["ELJEV_CALIBRATION_PATH"] = str(calibration_path)
+
+        calibration = load_calibration()
+        result = verdict_from_engine(
+            {"results": [{"index": 0, "relevance_score": 0.9}, {"index": 1, "relevance_score": 0.1}]},
+            self.candidates,
+            policy="calibrated",
+            calibration=calibration,
+        )
+        self.assertEqual(result["status"], "selected")
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["calibration_version"], "screen-v1")
 
 
 if __name__ == "__main__":
