@@ -63,6 +63,35 @@ Measured live against Azure AI Foundry `Cohere-rerank-v4.0-pro` in `southcentral
 
 ---
 
+## Decision Gating & LLM Escalation (When to Act vs Proceed to LLM)
+
+### How Decisioning & Confidence Gating Works
+`el-jev` uses a statistical **Dual Gate** before determining whether code can act immediately on a decision or must escalate to full LLM generative reasoning:
+
+1. **Probability Floor:** Calibrated top-choice probability must meet or exceed a threshold ($P(\text{top}) \ge \tau$, typically $\ge 60\%-80\%$).
+2. **Margin Separation:** The margin between top-1 and runner-up must meet a minimum clearance ($P(\text{top}) - P(\text{runner-up}) \ge \Delta$, typically $\ge 10\%-15\%$).
+
+A single-score check is insufficient because models can bunch scores tightly across candidates. The margin term provides the decisive confidence separation.
+
+### The Stop vs. Proceed Matrix
+
+| Exit Code | Status | Meaning | Copilot Action / LLM Directive |
+|---|---|---|---|
+| **`0`** | `selected` | **Dual Gate Passed:** High confidence and clear margin separation. | **Act immediately.** Bypass slow autoregressive LLM thinking loops. |
+| **`2`** | `needs_review` | **Uncertain / Low Margin:** Narrow margin ($<\Delta$) or low confidence. | **Proceed to LLM.** Trigger full generative reasoning to evaluate broader context. |
+| **`2`** | `abstain_tie` | **Exact Score Tie:** Top two candidate scores are equal. | **Abstain & Fallback:** LLM or human must review ambiguity. |
+| **`2`** | `trivial` | **Local Pre-gate Short-circuit:** Empty or single-choice prompt. | **Pass-through:** Normal host execution continues. |
+| **`2`** | `engine_error` | **Transport/Timeout/Auth Failure:** Downstream service unreachable. | **Fail-Open:** Host proceeds directly to LLM with zero disruption. |
+| **`1`** | `invalid_input` | **Contract Hard Violation:** Malformed JSON, cap breach (>250 candidates). | **Reject:** Immediate client error before model invocation. |
+
+### What Happens if Decisioning is Wrong or Needs Deeper Context?
+
+- **Advisory Sidecar Posture:** `el-jev` advises; host code and Copilot retain full execution control. `el-jev` never directly executes mutations, writes files, or triggers deployments.
+- **Fail-Open by Design:** Any uncertain verdict, network timeout, rate limit (HTTP 429), or authentication blip emits `status: needs_review` (exit 2) or `{}` within milliseconds, ensuring prompt execution is never blocked.
+- **LLM Override Authority:** The Copilot LLM receives the `[el-jev decision]` block as prior evidence in its prompt context. If multi-turn conversation history, external documentation, or nuanced edge cases contradict the classifier, the LLM naturally overrides the verdict and reasons through the problem using its full parameter capacity.
+
+---
+
 ## Azure AI Foundry Prerequisites (One-Time Setup)
 
 `el-jev` uses **keyless authentication** with Microsoft Entra ID. No API keys are stored or transmitted.
