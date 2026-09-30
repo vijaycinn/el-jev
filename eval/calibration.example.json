@@ -1,0 +1,25 @@
+{
+  "schema": "eljev.eval.calibration/1",
+  "calibration_version": "calibration-v1",
+  "fit_date": "2026-09-24T00:00:00Z",
+  "corpus_hash": "replace-with-sha256",
+  "labels_hash": "replace-with-sha256",
+  "split_hash": "replace-with-sha256",
+  "split_manifest": "C:\\Users\\example\\.eljev\\corpus\\split.json",
+  "split_sizes": {
+    "development": 0,
+    "heldout": 0,
+    "labelled": 0
+  },
+  "temperature": 1.0,
+  "top_k": 50,
+  "risk_budget": 0.02,
+  "confidence": 0.95,
+  "threshold": 1.0,
+  "margin_threshold": 1.0,
+  "metrics": {
+    "development": {},
+    "selected_development_operating_point": {},
+    "heldout_is_locked": true
+  }
+}

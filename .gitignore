@@ -1,0 +1,46 @@
+__pycache__/
+*.pyc
+.venv/
+.eljev/
+
+# Keep corpus and reports structurally difficult to commit.
+eval/corpus/
+eval/corpus/*
+!eval/corpus/
+!eval/corpus/.gitkeep
+!eval/corpus/README.md
+eval/reports/
+eval/reports/*
+!eval/reports/
+!eval/reports/.gitkeep
+eval/calibration.json
+
+# Captured corpora and decision data are not source.
+*.jsonl
+**/*captured*
+**/*decision-data*
+**/*transcript*
+**/*capture*
+**/*recording*
+*.ndjson
+*.parquet
+*.sqlite
+*.db
+
+# Secrets and local credentials.
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*secret*
+*token*
+*credential*
+
+# Common local tooling.
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/

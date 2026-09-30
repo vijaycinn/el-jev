@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vijaycinn/el-jev/eval/schema/label.schema.json",
+  "title": "el-jev blind set-valued evaluation label",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "annotation_id",
+    "record_id",
+    "labeler_id",
+    "annotation_kind",
+    "acceptable_choices",
+    "none",
+    "labeled_at"
+  ],
+  "allOf": [
+    {
+      "if": { "properties": { "none": { "const": true } } },
+      "then": { "properties": { "acceptable_choices": { "maxItems": 0 } } }
+    },
+    {
+      "if": { "properties": { "none": { "const": false } } },
+      "then": { "properties": { "acceptable_choices": { "minItems": 1 } } }
+    }
+  ],
+  "properties": {
+    "schema": { "const": "eljev.eval.label/1" },
+    "annotation_id": { "type": "string", "minLength": 1 },
+    "record_id": { "type": "string", "minLength": 1 },
+    "labeler_id": { "type": "string", "minLength": 1 },
+    "annotation_kind": { "enum": ["primary", "retest"] },
+    "acceptable_choices": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "none": { "type": "boolean" },
+    "labeled_at": { "type": "string", "format": "date-time" },
+    "notes": { "type": "string" }
+  }
+}

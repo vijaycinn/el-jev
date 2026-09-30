@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vijaycinn/el-jev/eval/schema/corpus-record.schema.json",
+  "title": "el-jev replayable evaluation corpus record",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema",
+    "record_id",
+    "captured_at",
+    "criterion",
+    "candidate_payload",
+    "candidate_ids",
+    "n_candidates",
+    "candidate_lengths",
+    "baseline_choice",
+    "deterministic_trigger",
+    "task_wall_ms",
+    "redaction_policy"
+  ],
+  "properties": {
+    "schema": { "const": "eljev.eval.corpus/1" },
+    "record_id": { "type": "string", "minLength": 1 },
+    "captured_at": { "type": "string", "format": "date-time" },
+    "criterion": { "type": "string", "minLength": 1 },
+    "candidate_payload": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 250,
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "candidate_ids": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "n_candidates": { "type": "integer", "minimum": 1, "maximum": 250 },
+    "candidate_lengths": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "integer", "minimum": 1, "maximum": 2000 }
+    },
+    "baseline_choice": { "type": ["string", "null"] },
+    "deterministic_trigger": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["fired"],
+      "properties": { "fired": { "type": "boolean" } }
+    },
+    "task_wall_ms": { "type": "number", "minimum": 0 },
+    "turn_count": { "type": ["integer", "null"], "minimum": 0 },
+    "token_counts": {
+      "type": ["object", "null"],
+      "additionalProperties": { "type": ["integer", "null"], "minimum": 0 }
+    },
+    "tier_path": { "type": "array", "items": { "type": "string" } },
+    "engine": { "type": ["string", "null"] },
+    "engine_version": { "type": ["string", "null"] },
+    "model_results": {
+      "type": ["array", "null"],
+      "items": { "$ref": "#/$defs/model-result" }
+    },
+    "elapsed_ms": { "type": ["object", "null"], "additionalProperties": { "type": "number" } },
+    "redaction_policy": {
+      "type": "object",
+      "required": ["name", "applied_at_entry", "raw_text_persisted"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "applied_at_entry": { "const": true },
+        "raw_text_persisted": { "const": false }
+      },
+      "additionalProperties": true
+    },
+    "provenance": { "type": "object", "additionalProperties": true }
+  },
+  "$defs": {
+    "candidate": {
+      "type": "object",
+      "required": ["id", "text"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "metadata": {}
+      },
+      "additionalProperties": true
+    },
+    "model-result": {
+      "type": "object",
+      "required": ["id", "relevance_score"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "index": { "type": ["integer", "null"], "minimum": 0 },
+        "relevance_score": { "type": "number" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

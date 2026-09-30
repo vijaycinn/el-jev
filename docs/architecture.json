@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "el-jev Architecture & Azure Foundry Integration",
+    "output": "architecture.html",
+    "quality_profile": "showcase"
+  },
+  "components": [
+    { "id": "user", "type": "external", "label": "Developer", "sublabel": "Copilot CLI Prompt", "pos": [40, 260], "size": [130, 60] },
+    { "id": "switch", "type": "security", "label": "EL_JEV Switch", "sublabel": "Env: ON | OFF", "pos": [40, 110], "size": [130, 60], "tag": "Account Env" },
+    { "id": "hook", "type": "backend", "label": "Pre-Turn Hook", "sublabel": "userPromptTransformed", "pos": [240, 260], "size": [150, 60], "tag": "< 5ms check" },
+    { "id": "copilot_llm", "type": "external", "label": "Copilot LLM", "sublabel": "Injected Context", "pos": [240, 420], "size": [150, 60], "tag": "Acts on Verdict" },
+    { "id": "daemon", "type": "backend", "label": "el-jev Daemon", "sublabel": "127.0.0.1:8787", "pos": [460, 260], "size": [140, 60], "tag": "Warm Process" },
+    { "id": "engine", "type": "backend", "label": "System One Core", "sublabel": "Choice, Noul, Score", "pos": [670, 260], "size": [150, 60] },
+    { "id": "entra", "type": "security", "label": "Microsoft Entra ID", "sublabel": "scope: ai.azure.com", "pos": [460, 110], "size": [150, 60], "tag": "Zero API Keys" },
+    { "id": "rbac", "type": "security", "label": "RBAC Role Gate", "sublabel": "Cognitive Services User", "pos": [680, 110], "size": [160, 60], "tag": "Managed Identity" },
+    { "id": "foundry", "type": "cloud", "label": "AI Services Gateway", "sublabel": "services.ai.azure.com", "pos": [910, 260], "size": [160, 60] },
+    { "id": "cohere", "type": "cloud", "label": "Cohere Model", "sublabel": "Cohere-rerank-v4.0-pro", "pos": [1140, 260], "size": [160, 60], "tag": "p50: 175ms" }
+  ],
+  "boundaries": [
+    { "kind": "security-group", "label": "Developer Workstation (Windows / macOS / Linux)", "wraps": ["user", "switch", "hook", "copilot_llm", "daemon", "engine"] },
+    { "kind": "region", "label": "Azure AI Foundry Cloud Environment", "wraps": ["entra", "rbac", "foundry", "cohere"] }
+  ],
+  "connections": [
+    { "id": "prompt-in", "from": "user", "to": "hook", "label": "prompt", "variant": "emphasis" },
+    { "id": "check-switch", "from": "switch", "to": "hook", "label": "checks state", "fromSide": "bottom", "toSide": "top" },
+    { "id": "hook-to-daemon", "from": "hook", "to": "daemon", "label": "HTTP :8787" },
+    { "id": "daemon-to-engine", "from": "daemon", "to": "engine", "label": "route" },
+    { "id": "get-token", "from": "engine", "to": "entra", "label": "mint token", "fromSide": "top", "toSide": "bottom", "variant": "security" },
+    { "id": "entra-to-rbac", "from": "entra", "to": "rbac", "label": "verifies role", "fromSide": "right", "toSide": "left", "variant": "security" },
+    { "id": "engine-to-foundry", "from": "engine", "to": "foundry", "label": "HTTPS TLS", "variant": "emphasis" },
+    { "id": "foundry-to-cohere", "from": "foundry", "to": "cohere", "label": "rerank" },
+    { "id": "inject-context", "from": "hook", "to": "copilot_llm", "label": "injected verdict", "fromSide": "bottom", "toSide": "top", "variant": "emphasis", "labelDy": 24 },
+    { "id": "ready-action", "from": "copilot_llm", "to": "user", "label": "instant action", "fromSide": "left", "toSide": "bottom", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Local Speed Path", "items": ["Pre-turn hook intercepts prompt in < 5ms", "Resident warm daemon keeps TLS session alive", "Zero LLM multi-turn token latency for classification"] },
+    { "dot": "emerald", "title": "TypeSafe Decisioning", "items": ["Choice: routes prompt to target intent with probabilities", "Noul: evaluates binary safety/policy gates in < 200ms", "Score: rates urgency and risk along ordinal criteria"] },
+    { "dot": "rose", "title": "Enterprise Security & RBAC", "items": ["Keyless auth via Entra ID (scope: https://ai.azure.com/.default)", "Requires Cognitive Services User role on resource", "Attachable to Azure Managed Identity in pipelines"] }
+  ]
+}

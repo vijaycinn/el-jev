@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "eljev": {
+      "command": "python",
+      "args": [
+        "<path-to-el-jev>/mcp/server.py"
+      ],
+      "env": {
+        "PYTHONUTF8": "1",
+        "ELJEV_HOST": "127.0.0.1",
+        "ELJEV_PORT": "8787",
+        "ELJEV_COVERAGE_POLICY": "always_abstain_v0"
+      }
+    }
+  }
+}
