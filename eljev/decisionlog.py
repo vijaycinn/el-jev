@@ -27,6 +27,15 @@ def redact_enabled() -> bool:
     return os.environ.get("ELJEV_REDACT", "1") != "0"
 
 
+def logging_enabled() -> bool:
+    val = os.environ.get("ELJEV_LOGGING")
+    if val is not None:
+        return val.strip().lower() not in {"0", "false", "off", "no", "disable"}
+    if os.environ.get("ELJEV_NO_LOG") in {"1", "true", "yes"}:
+        return False
+    return True
+
+
 class DecisionLog:
     """Thread-safe append-only decision log."""
 
@@ -40,6 +49,8 @@ class DecisionLog:
         record: DecisionRecord | Mapping[str, Any],
         candidates: Iterable[Candidate] | None = None,
     ) -> None:
+        if not logging_enabled():
+            return
         payload = record.to_dict() if isinstance(record, DecisionRecord) else dict(record)
         if candidates is not None:
             candidate_list = list(candidates)

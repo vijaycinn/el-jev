@@ -92,8 +92,19 @@ def _now_ms() -> float:
     return time.perf_counter() * 1000.0
 
 
+def _logging_enabled() -> bool:
+    val = os.environ.get("ELJEV_LOGGING")
+    if val is not None:
+        return val.strip().lower() not in {"0", "false", "off", "no", "disable"}
+    if os.environ.get("ELJEV_NO_LOG") in {"1", "true", "yes"}:
+        return False
+    return True
+
+
 def _log(event: str, **fields: Any) -> None:
     """Append diagnostics without ever writing secrets or candidate text."""
+    if not _logging_enabled():
+        return
     try:
         log_dir = Path(
             os.environ.get("ELJEV_LOG_DIR", str(_eljev_dir() / "logs"))
