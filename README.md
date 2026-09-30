@@ -177,7 +177,7 @@ python -m eljev decide --state-text "Customer asked for ETA and owner details." 
 - `intent` (default): for prompts with at least `ELJEV_HOOK_MIN_WORDS` words (default 4), classify into a **choice** over five intents: `code_modification`, `review_audit`, `investigation_search`, `execution_testing`, `advisory_explanation`.
 - `marker`: only act on explicit `<!--eljev.request:{...}-->` markers or `eljev.hook/1` payloads.
 
-Hook timeout defaults to `ELJEV_HOOK_TIMEOUT_MS=500`. If daemon is down, the hook attempts one debounced spawn and returns `{}` immediately. Only `selected`, `needs_review`, and `abstain_tie` decisions inject advisory text.
+Hook timeout defaults to `ELJEV_HOOK_TIMEOUT_MS=750` (or `hook_timeout_ms` in `config.json`). If daemon is down, the hook attempts one debounced spawn and returns `{}` immediately. Only `selected`, `needs_review`, and `abstain_tie` decisions inject advisory text.
 
 Example injected block:
 
@@ -300,7 +300,7 @@ Resolution order is **environment variable > `config.json` > default**.
 | logging | `ELJEV_LOGGING` (ON/OFF) | — | ON |
 | log dir | `ELJEV_LOG_DIR` | — | `<ELJEV_DIR>/logs` |
 | state dir | `ELJEV_DIR` | — | `<repo>/.eljev` |
-| hook timeout | `ELJEV_HOOK_TIMEOUT_MS` | — | 500 |
+| hook timeout | `ELJEV_HOOK_TIMEOUT_MS` | `hook_timeout_ms` | 750 |
 | hook min words | `ELJEV_HOOK_MIN_WORDS` | — | 4 |
 | engine timeout | `ELJEV_TIMEOUT_MS` | — | 2500 |
 | redaction | `ELJEV_REDACT` | — | 1 |

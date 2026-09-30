@@ -610,7 +610,7 @@ def _validate_endpoint(raw: str) -> str:
 def _configure(args: list[str]) -> int:
     options = _parse_options(
         args,
-        value_options={"endpoint", "deployment", "policy", "auth", "hook-mode", "subscription"},
+        value_options={"endpoint", "deployment", "policy", "auth", "hook-mode", "subscription", "hook-timeout-ms"},
         flag_options=set(),
     )
     if not options:
@@ -649,6 +649,14 @@ def _configure(args: list[str]) -> int:
         if mode not in config.VALID_HOOK_MODES:
             raise CLIInputError(f"--hook-mode must be one of: {', '.join(config.VALID_HOOK_MODES)}")
         updates["hook_mode"] = mode
+    if "hook-timeout-ms" in options:
+        try:
+            timeout_ms = int(str(options["hook-timeout-ms"]).strip())
+            if timeout_ms <= 0:
+                raise ValueError
+        except ValueError:
+            raise CLIInputError("--hook-timeout-ms must be a positive integer")
+        updates["hook_timeout_ms"] = timeout_ms
 
     saved = config.save_config(updates)
     _emit(

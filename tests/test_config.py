@@ -21,6 +21,7 @@ class ConfigTests(unittest.TestCase):
         "ELJEV_COVERAGE_POLICY",
         "ELJEV_AUTH",
         "ELJEV_HOOK_MODE",
+        "ELJEV_HOOK_TIMEOUT_MS",
         "ELJEV_CALIBRATION_PATH",
     )
 
@@ -153,6 +154,15 @@ class ConfigTests(unittest.TestCase):
         os.environ["ELJEV_HOOK_MODE"] = "MARKER"
         self.assertEqual(config.auth_mode(), "managed_identity")
         self.assertEqual(config.hook_mode(), "marker")
+
+    def test_hook_timeout_ms(self):
+        self.assertEqual(config.hook_timeout_ms(), 750)
+        config.save_config({"hook_timeout_ms": 1000})
+        self.assertEqual(config.hook_timeout_ms(), 1000)
+        os.environ["ELJEV_HOOK_TIMEOUT_MS"] = "800"
+        self.assertEqual(config.hook_timeout_ms(), 800)
+        os.environ["ELJEV_HOOK_TIMEOUT_MS"] = "invalid"
+        self.assertEqual(config.hook_timeout_ms(), 1000)
 
     def test_calibration_path_override(self):
         os.environ.pop("ELJEV_CALIBRATION_PATH", None)

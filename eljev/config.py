@@ -13,6 +13,7 @@ from typing import Any
 
 DEFAULT_DEPLOYMENT = "Cohere-rerank-v4.0-pro"
 DEFAULT_POLICY = "always_abstain_v0"
+DEFAULT_HOOK_TIMEOUT_MS = 750
 VALID_POLICIES = ("always_abstain_v0", "calibrated")
 VALID_AUTH = ("azcli", "managed_identity")
 VALID_HOOK_MODES = ("intent", "marker")
@@ -194,6 +195,19 @@ def hook_mode() -> str:
         value = configured if isinstance(configured, str) else "intent"
     mode = value.strip().lower()
     return mode if mode in VALID_HOOK_MODES else "intent"
+
+
+def hook_timeout_ms() -> int:
+    raw = _env_text("ELJEV_HOOK_TIMEOUT_MS")
+    if raw is not None:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    configured = load_config().get("hook_timeout_ms")
+    if isinstance(configured, int) and configured > 0:
+        return configured
+    return DEFAULT_HOOK_TIMEOUT_MS
 
 
 def calibration_path() -> Path:

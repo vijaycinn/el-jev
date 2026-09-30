@@ -24,7 +24,7 @@ except Exception:
 
 HOOK_SCHEMA = "eljev.hook/1"
 DECISION_SCHEMA = "eljev.decision/1"
-DEFAULT_TIMEOUT_MS = 500
+DEFAULT_TIMEOUT_MS = 750
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 DEFAULT_MIN_WORDS = 4
@@ -69,6 +69,8 @@ def _read_payload() -> dict[str, Any] | None:
 
 
 def _timeout_ms() -> int:
+    if eljev_config is not None:
+        return eljev_config.hook_timeout_ms()
     raw = os.environ.get("ELJEV_HOOK_TIMEOUT_MS", str(DEFAULT_TIMEOUT_MS))
     try:
         parsed = int(raw)
