@@ -1,0 +1,58 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "el-jev Decisioning & Dual-Gate Inner Wiring",
+    "output": "decisioning-flow.html",
+    "quality_profile": "showcase"
+  },
+  "lanes": [
+    { "id": "prompt_intake", "label": "Prompt Intake & Shaping" },
+    { "id": "decision_engine", "label": "el-jev Engine & Azure Foundry" },
+    { "id": "dual_gate_lane", "label": "Dual Gate & Safety Evaluation", "variant": "exception" },
+    { "id": "execution", "label": "Copilot Execution Outcome" }
+  ],
+  "phases": [
+    { "id": "shaping_phase", "label": "1. Shape Mapping", "fromCol": 0, "toCol": 1 },
+    { "id": "scoring_phase", "label": "2. Scoring & Softmax", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "gating_phase", "label": "3. Dual Gate & Execution", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["prompt", "shaper", "cohere", "softmax", "gate", "act_fast"],
+  "nodes": [
+    { "id": "prompt", "lane": "prompt_intake", "col": 0, "type": "external", "label": "User Prompt", "sublabel": "statement or ask", "width": 140 },
+    { "id": "shaper", "lane": "prompt_intake", "col": 1, "type": "backend", "label": "Shape Selector", "sublabel": "Choice, Noul, Score", "tag": "< 1ms parsing", "width": 140 },
+    { "id": "cohere", "lane": "decision_engine", "col": 2, "type": "cloud", "label": "Cohere Rerank", "sublabel": "cross-encoder inference", "tag": "p50: 175ms", "width": 140 },
+    { "id": "softmax", "lane": "decision_engine", "col": 3, "type": "backend", "label": "Softmax Scaling", "sublabel": "T=0.05 temperature", "tag": "sum(P) = 1.0", "width": 140 },
+    { "id": "gate", "lane": "dual_gate_lane", "col": 4, "type": "security", "label": "Dual Gate Check", "sublabel": "P(top)>=τ and Δ>=margin", "tag": "statistical gate", "width": 140 },
+    { "id": "act_fast", "lane": "execution", "col": 5, "type": "backend", "label": "Exit 0: Selected", "sublabel": "instant action, bypass LLM", "tag": "high confidence", "width": 140 },
+    { "id": "escalate", "lane": "dual_gate_lane", "col": 5, "type": "external", "label": "Exit 2: Needs Review", "sublabel": "proceed to LLM reasoning", "tag": "ambiguous / tie", "width": 140 }
+  ],
+  "edges": [
+    { "id": "e_prompt_shaper", "from": "prompt", "to": "shaper", "variant": "default" },
+    { "id": "e_shaper_cohere", "from": "shaper", "to": "cohere", "label": "query + candidates", "variant": "emphasis" },
+    { "id": "e_cohere_softmax", "from": "cohere", "to": "softmax", "label": "relevance scores", "variant": "default" },
+    { "id": "e_softmax_gate", "from": "softmax", "to": "gate", "label": "P(top) and margin", "variant": "default" },
+    { "id": "e_gate_pass", "from": "gate", "to": "act_fast", "label": "pass dual gate", "variant": "emphasis" },
+    { "id": "e_gate_fail", "from": "gate", "to": "escalate", "label": "narrow margin / tie", "variant": "security" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Statement to Decision Mapping",
+      "items": [
+        "A statement is mapped to exactly one decision shape based on the ask",
+        "Verification / safety questions -> Noul (binary True vs False)",
+        "Actions & intents -> Choice (multi-class routing across candidate categories)"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Dual Gate Safety Condition",
+      "items": [
+        "Pass: P(top) >= 0.70 AND (P(top) - P(runner-up)) >= 0.15 -> Exit 0 (Act immediately)",
+        "Fail: P(top) < 0.70 OR margin < 0.15 OR exact tie -> Exit 2 (Proceed to LLM)",
+        "Zero hallucination: low-margin ambiguity is never guessed"
+      ]
+    }
+  ]
+}

@@ -6,9 +6,13 @@ Built to mimic **TypeSafeAI Jev**, `el-jev` runs on an enterprise-compliant **Az
 
 ---
 
-## Architecture Schematic
+## Architecture Schematics
 
-The full interactive architecture diagram generated with Archify is available at [`docs/architecture.html`](docs/architecture.html).
+Interactive schematics generated using the **Archify** visual engine:
+
+1. **System Topology & Cloud Integration:** [`docs/architecture.html`](docs/architecture.html)
+2. **Decisioning & Dual-Gate Inner Wiring:** [`docs/decisioning-flow.html`](docs/decisioning-flow.html)
+3. **Full Architectural Deep Dive:** [`docs/architecture.md`](docs/architecture.md)
 
 ```text
 +-----------------------------------------------------------------------------------+
