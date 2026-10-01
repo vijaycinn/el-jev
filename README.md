@@ -2,10 +2,25 @@
 
 `el-jev` is a fast typed-decision sidecar and Copilot CLI pre-turn hook that mimics TypeSafe AI Jev decision primitives (**choice**, **noul**, **score**) on Azure AI Foundry Cohere. It is designed for auditable abstention first: by default, non-trivial decisions stay advisory until calibration is fitted on labelled data.
 
+## How is this different from Jev?
+
+> **Bottom line:** TypeSafe Jev is designed as a decision primitive inside application-owned control flow: code asks a narrow typed question, receives probabilities, and enforces the selected branch. `el-jev` recreates that bounded-decision pattern with Foundry-hosted Cohere Rerank, but its current GitHub Copilot hook uses the result as a pre-turn advisory. Copilot still runs on every turn and remains responsible for choosing tools and actions.
+
+| Dimension | TypeSafe Jev | `el-jev` core | Current GitHub Copilot hook |
+|---|---|---|---|
+| Decision engine | Purpose-built System One model | Cohere relevance scores converted into decision probabilities | Same `el-jev` decision record |
+| Control owner | Application code | Calling application or harness | GitHub Copilot LLM |
+| Decision effect | Code can enforce the selected route | Binding when a calibrated caller acts on `selected` | Advisory block appended to the prompt |
+| LLM usage | Optional downstream branch | Optional when used from custom orchestration | Copilot LLM still runs every turn |
+| Best fit | Typed decisions embedded in software workflows | Fast bounded routing, screening, gating, and triage | Intent annotation and routing experiments in Copilot CLI |
+
+For a visual walkthrough, open the [interactive Jev vs `el-jev` comparison](docs/jev-vs-el-jev.html) or read the [architecture deep dive](docs/architecture.md#jev-system-one-vs-el-jev).
+
 ## Architecture
 
 - 🌐 [Interactive system schematic](docs/architecture.html)
 - 🌐 [Interactive decisioning flow](docs/decisioning-flow.html)
+- 🌐 [Interactive Jev vs el-jev comparison](docs/jev-vs-el-jev.html)
 - 📖 [Architecture deep dive](docs/architecture.md)
 
 <p align="center">

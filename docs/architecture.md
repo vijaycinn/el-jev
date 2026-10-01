@@ -6,6 +6,53 @@
 
 - 🌐 [System schematic](architecture.html)
 - 🌐 [Decisioning flow schematic](decisioning-flow.html)
+- 🌐 [Jev vs el-jev comparison](jev-vs-el-jev.html)
+
+## Jev System One vs el-jev
+
+> **Bottom line:** TypeSafe Jev is intended to be a typed decision primitive inside application-owned control flow. `el-jev` recreates the bounded decision surface with Foundry-hosted Cohere Rerank, while the current GitHub Copilot integration injects the result as advisory context rather than enforcing the route.
+
+### Architecture comparison
+
+| Dimension | TypeSafe Jev pattern | `el-jev` decision core | Current Copilot CLI integration |
+|---|---|---|---|
+| Workflow owner | Deterministic application code | The calling application, CLI, MCP client, or harness | GitHub Copilot LLM |
+| Decision input | Purpose-selected state and one or more typed questions | State plus one `choice`, `noul`, `score`, or `screen` request | The transformed user prompt, normally classified into five fixed intents |
+| Decision engine | Purpose-built System One model | Cohere Rerank over answer descriptions | The `el-jev` daemon and Cohere engine |
+| Probability semantics | Native typed decision distribution | Derived from relevance scores and calibration | Same derived decision record |
+| Policy enforcement | Code branches on the result | Available to callers through status and exit code | Result is rendered as an `[el-jev advisory]` prompt block |
+| LLM invocation | Only when the selected branch needs generation or reasoning | Optional in a custom orchestrator | Copilot still runs after the hook |
+| Operational role | Decision primitive embedded in software | Decision sidecar with audit, gating, and abstention | Pre-turn intent annotation |
+
+### Intended Jev control loop
+
+1. Application code reaches a narrow decision point.
+2. Code sends only the required state and typed questions to Jev.
+3. Jev returns structured answers, probabilities, and confidence.
+4. Application policy accepts, abstains, or escalates.
+5. Code invokes an LLM, tool, deterministic action, or human only for the selected branch.
+
+### Current GitHub Copilot control loop
+
+1. Copilot emits a `userPromptTransformed` hook event.
+2. The hook sends the prompt to the loopback `el-jev` daemon.
+3. In default `intent` mode, Cohere scores five intent descriptions.
+4. `el-jev` converts those relevance scores into probabilities and applies its gate.
+5. The hook appends the decision as an advisory block.
+6. Copilot reads the advisory but independently chooses its tools and actions.
+
+This distinction matters for latency and cost. The decision itself can replace a slower LLM routing call in a custom harness, but the current prompt hook does not prevent the main Copilot LLM call. It is therefore best understood as a safe integration and evaluation surface for Jev-style routing, not yet a binding router for Copilot CLI.
+
+### Best-fit el-jev use cases
+
+| Use case | Fit | Why |
+|---|---|---|
+| Bounded intent, model, tool, or sub-agent selection | Strong | Candidate descriptions map naturally to reranking |
+| Screening a large candidate set | Strong | `screen` directly uses Cohere's native ranking behavior |
+| Binary approval or safety gate | Experimental | `noul` is represented as competing true/false candidates and requires labelled calibration |
+| Ordered severity or priority | Experimental | `score` is represented as competing ordered level descriptions |
+| Copilot pre-turn guidance | Advisory | Useful for observing routing quality, but Copilot retains control |
+| Avoiding an LLM call entirely | Requires custom orchestration | A wrapper or agent harness must call `el-jev` before selecting the downstream branch |
 
 ## Topology diagrams
 
@@ -85,4 +132,3 @@ This prevents browser and DNS-rebinding abuse against paid remote calls.
 - `POST /v1/decide`: Shape A `choice | noul | score`.
 - `GET /v1/log`: recent decision records.
 - `POST /v1/shutdown`: controlled daemon stop.
-

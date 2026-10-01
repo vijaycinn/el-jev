@@ -1,0 +1,247 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Jev System One vs el-jev for GitHub Copilot",
+    "quality_profile": "showcase",
+    "viewBox": [1380, 660],
+    "views": [
+      {
+        "id": "jev-control-loop",
+        "label": "Jev control loop",
+        "focus": ["app-code", "typed-question", "jev-model", "typed-answer", "code-gate", "downstream-work"],
+        "note": "Application code asks a narrow question, enforces the result, and invokes an LLM only when the selected branch needs one."
+      },
+      {
+        "id": "ghcp-advisory-loop",
+        "label": "Current GHCP integration",
+        "focus": ["user-prompt", "pre-turn-hook", "eljev-daemon", "cohere-rerank", "advisory-block", "copilot-llm"],
+        "note": "The hook classifies the prompt and injects an advisory; GitHub Copilot remains the orchestrator and still runs on every turn."
+      },
+      {
+        "id": "shared-decision-core",
+        "label": "Shared decision concepts",
+        "focus": ["typed-question", "jev-model", "typed-answer", "eljev-daemon", "cohere-rerank", "advisory-block"],
+        "note": "Both expose bounded decisions, probabilities, confidence gates, and abstention, but their model semantics and enforcement differ."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "app-code",
+      "type": "backend",
+      "label": "Application code",
+      "sublabel": "Owns deterministic workflow",
+      "pos": [40, 145],
+      "size": [170, 68]
+    },
+    {
+      "id": "typed-question",
+      "type": "backend",
+      "label": "Typed question",
+      "sublabel": "choice / noul / score",
+      "pos": [255, 145],
+      "size": [170, 68]
+    },
+    {
+      "id": "jev-model",
+      "type": "cloud",
+      "label": "TypeSafe Jev",
+      "sublabel": "System One API",
+      "pos": [470, 145],
+      "size": [170, 68]
+    },
+    {
+      "id": "typed-answer",
+      "type": "database",
+      "label": "Structured answer",
+      "sublabel": "probabilities + confidence",
+      "pos": [685, 145],
+      "size": [180, 68]
+    },
+    {
+      "id": "code-gate",
+      "type": "security",
+      "label": "Code-owned gate",
+      "sublabel": "Enforces branch or escalation",
+      "pos": [910, 145],
+      "size": [185, 68]
+    },
+    {
+      "id": "downstream-work",
+      "type": "external",
+      "label": "Selected work",
+      "sublabel": "LLM / tool / human / stop",
+      "pos": [1140, 145],
+      "size": [190, 68]
+    },
+    {
+      "id": "user-prompt",
+      "type": "external",
+      "label": "User prompt",
+      "sublabel": "GitHub Copilot CLI turn",
+      "pos": [40, 430],
+      "size": [170, 68]
+    },
+    {
+      "id": "pre-turn-hook",
+      "type": "frontend",
+      "label": "Pre-turn hook",
+      "sublabel": "userPromptTransformed",
+      "pos": [255, 430],
+      "size": [170, 68]
+    },
+    {
+      "id": "eljev-daemon",
+      "type": "backend",
+      "label": "el-jev daemon",
+      "sublabel": "typed decision sidecar",
+      "pos": [470, 430],
+      "size": [170, 68]
+    },
+    {
+      "id": "cohere-rerank",
+      "type": "cloud",
+      "label": "Cohere Rerank",
+      "sublabel": "Foundry-hosted scorer",
+      "pos": [685, 430],
+      "size": [180, 68]
+    },
+    {
+      "id": "advisory-block",
+      "type": "messagebus",
+      "label": "Advisory block",
+      "sublabel": "intent + confidence + gate",
+      "pos": [910, 430],
+      "size": [185, 68]
+    },
+    {
+      "id": "copilot-llm",
+      "type": "external",
+      "label": "GitHub Copilot LLM",
+      "sublabel": "Still chooses tools and actions",
+      "pos": [1140, 430],
+      "size": [190, 68]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Intended Jev pattern: decision primitive inside application control flow",
+      "wraps": ["app-code", "typed-question", "jev-model", "typed-answer", "code-gate", "downstream-work"],
+      "pad": 24
+    },
+    {
+      "kind": "region",
+      "label": "Current el-jev GHCP pattern: pre-turn classification and prompt annotation",
+      "wraps": ["user-prompt", "pre-turn-hook", "eljev-daemon", "cohere-rerank", "advisory-block", "copilot-llm"],
+      "pad": 24
+    }
+  ],
+  "connections": [
+    {
+      "id": "define-question",
+      "from": "app-code",
+      "to": "typed-question",
+      "label": "define narrow decision",
+      "labelDy": 58,
+      "variant": "emphasis"
+    },
+    {
+      "id": "evaluate-question",
+      "from": "typed-question",
+      "to": "jev-model",
+      "label": "state + questions",
+      "labelDy": 58
+    },
+    {
+      "id": "return-answer",
+      "from": "jev-model",
+      "to": "typed-answer",
+      "label": "typed probabilities",
+      "labelDy": 58
+    },
+    {
+      "id": "apply-policy",
+      "from": "typed-answer",
+      "to": "code-gate",
+      "label": "threshold + policy",
+      "labelDy": 58,
+      "variant": "security"
+    },
+    {
+      "id": "dispatch-work",
+      "from": "code-gate",
+      "to": "downstream-work",
+      "label": "enforced route",
+      "labelDy": 58,
+      "variant": "emphasis"
+    },
+    {
+      "id": "transform-prompt",
+      "from": "user-prompt",
+      "to": "pre-turn-hook",
+      "label": "prompt event",
+      "labelDy": 58,
+      "variant": "emphasis"
+    },
+    {
+      "id": "request-decision",
+      "from": "pre-turn-hook",
+      "to": "eljev-daemon",
+      "label": "five-way intent choice",
+      "labelDy": 58
+    },
+    {
+      "id": "score-options",
+      "from": "eljev-daemon",
+      "to": "cohere-rerank",
+      "label": "query + candidate descriptions",
+      "labelDy": 58
+    },
+    {
+      "id": "build-advisory",
+      "from": "cohere-rerank",
+      "to": "advisory-block",
+      "label": "relevance scores",
+      "labelDy": 58
+    },
+    {
+      "id": "inject-advisory",
+      "from": "advisory-block",
+      "to": "copilot-llm",
+      "label": "modified prompt",
+      "labelDy": 58,
+      "variant": "dashed"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Where el-jev matches",
+      "items": [
+        "Bounded typed decisions",
+        "Confidence gates and abstention",
+        "Auditable records"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "Current GHCP constraint",
+      "items": [
+        "Advisory does not enforce routing",
+        "The Copilot LLM still runs",
+        "Prompt-only context limits state"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Best-fit el-jev use case",
+      "items": [
+        "Fast bounded routing, screening, and gating",
+        "A wrapper or harness makes routes binding",
+        "Use an LLM only when a branch needs it"
+      ]
+    }
+  ]
+}
