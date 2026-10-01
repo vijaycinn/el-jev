@@ -14,15 +14,37 @@
 
 ### Architecture comparison
 
-| Dimension | TypeSafe Jev pattern | `el-jev` decision core | Current Copilot CLI integration |
+| Dimension | TypeSafe Jev pattern | `el-jev` decision service | GHCP hook adapter |
 |---|---|---|---|
 | Workflow owner | Deterministic application code | The calling application, CLI, MCP client, or harness | GitHub Copilot LLM |
 | Decision input | Purpose-selected state and one or more typed questions | State plus one `choice`, `noul`, `score`, or `screen` request | The transformed user prompt, normally classified into five fixed intents |
 | Decision engine | Purpose-built System One model | Cohere Rerank over answer descriptions | The `el-jev` daemon and Cohere engine |
 | Probability semantics | Native typed decision distribution | Derived from relevance scores and calibration | Same derived decision record |
-| Policy enforcement | Code branches on the result | Available to callers through status and exit code | Result is rendered as an `[el-jev advisory]` prompt block |
+| Policy enforcement | Application code branches on the returned decision | Returns `selected` or `needs_review`; the caller must explicitly enforce `selected` | Adds an `[el-jev advisory]` block that Copilot may follow or override |
 | LLM invocation | Only when the selected branch needs generation or reasoning | Optional in a custom orchestrator | Copilot still runs after the hook |
 | Operational role | Decision primitive embedded in software | Decision sidecar with audit, gating, and abstention | Pre-turn intent annotation |
+
+### Service boundary and deployment
+
+The GHCP hook is configured to use `el-jev`, but it is an integration adapter rather than the decision service itself:
+
+```text
+GHCP hook                 CLI / MCP / custom application
+     \                               /
+      ------> local el-jev daemon <--
+                       |
+                       ------> Foundry Cohere Rerank
+```
+
+The same daemon API can therefore serve the hook, the CLI, the MCP surface, or custom local orchestration.
+
+| Deployment mode | Current support | Description |
+|---|---|---|
+| Local sidecar | Supported | Daemon binds to `127.0.0.1:8787`; local callers use the typed decision API |
+| Separate local process without GHCP | Supported | CLI, MCP, or custom code can use the daemon without installing the Copilot hook |
+| Shared remote service | Not supported as-is | Requires a networked service boundary and production authentication, isolation, and observability |
+
+Remote hosting would require changing the current loopback assumptions: bind behind HTTPS, authenticate clients, make the service URL and `Host` behavior configurable, isolate tenants and logs, apply rate limits, and use managed identity for the Foundry call. `ELJEV_SYSTEMONE_URL` configures a remote decision-engine backend; it does not make the local `el-jev` daemon remotely accessible.
 
 ### Intended Jev control loop
 

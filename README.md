@@ -6,13 +6,27 @@
 
 > **Bottom line:** TypeSafe Jev is designed as a decision primitive inside application-owned control flow: code asks a narrow typed question, receives probabilities, and enforces the selected branch. `el-jev` recreates that bounded-decision pattern with Foundry-hosted Cohere Rerank, but its current GitHub Copilot hook uses the result as a pre-turn advisory. Copilot still runs on every turn and remains responsible for choosing tools and actions.
 
-| Dimension | TypeSafe Jev | `el-jev` core | Current GitHub Copilot hook |
+| Dimension | TypeSafe Jev | `el-jev` decision service | GHCP hook adapter |
 |---|---|---|---|
 | Decision engine | Purpose-built System One model | Cohere relevance scores converted into decision probabilities | Same `el-jev` decision record |
 | Control owner | Application code | Calling application or harness | GitHub Copilot LLM |
-| Decision effect | Code can enforce the selected route | Binding when a calibrated caller acts on `selected` | Advisory block appended to the prompt |
+| Decision effect | Application code branches on the returned decision | Returns `selected` or `needs_review`; the caller must explicitly enforce `selected` | Adds guidance to the prompt; Copilot may follow or override it |
 | LLM usage | Optional downstream branch | Optional when used from custom orchestration | Copilot LLM still runs every turn |
 | Best fit | Typed decisions embedded in software workflows | Fast bounded routing, screening, gating, and triage | Intent annotation and routing experiments in Copilot CLI |
+
+### Is el-jev tied to GitHub Copilot?
+
+No. The GHCP hook is one adapter to the reusable `el-jev` decision service:
+
+```text
+GHCP hook           CLI / MCP / custom application
+     \                         /
+      -> local el-jev daemon <-
+                  |
+                  -> Foundry Cohere Rerank
+```
+
+The supported deployment today is a **local sidecar**: the daemon binds to `127.0.0.1:8787`, and the hook, CLI, MCP server, or another local application can call it. A shared remote `el-jev` service is architecturally possible but is not supported as-is; it would require HTTPS, client authentication, remote-host configuration, tenant isolation, rate limiting, centralized observability, and removal of the current loopback-only security assumptions.
 
 For a visual walkthrough, open the [interactive Jev vs `el-jev` comparison](docs/jev-vs-el-jev.html) or read the [architecture deep dive](docs/architecture.md#jev-system-one-vs-el-jev).
 

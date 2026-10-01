@@ -16,7 +16,7 @@
         "id": "ghcp-advisory-loop",
         "label": "Current GHCP integration",
         "focus": ["user-prompt", "pre-turn-hook", "eljev-daemon", "cohere-rerank", "advisory-block", "copilot-llm"],
-        "note": "The hook classifies the prompt and injects an advisory; GitHub Copilot remains the orchestrator and still runs on every turn."
+        "note": "The GHCP hook is one adapter to the local decision service; GitHub Copilot remains the orchestrator and still runs on every turn."
       },
       {
         "id": "shared-decision-core",
@@ -227,11 +227,11 @@
     },
     {
       "dot": "amber",
-      "title": "Current GHCP constraint",
+      "title": "Service boundary today",
       "items": [
-        "Advisory does not enforce routing",
-        "The Copilot LLM still runs",
-        "Prompt-only context limits state"
+        "The GHCP hook is one adapter",
+        "CLI, MCP, or custom code can call the core",
+        "The daemon is loopback-only today"
       ]
     },
     {
