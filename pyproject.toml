@@ -19,6 +19,7 @@ Homepage = "https://github.com/vijaycinn/el-jev"
 
 [project.scripts]
 eljev = "eljev.cli:main"
+el-mds = "eljev.cli:main_mds"
 
 [tool.setuptools.packages.find]
 include = ["eljev*"]

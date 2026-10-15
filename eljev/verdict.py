@@ -117,13 +117,43 @@ def load_calibration() -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
-def calibration_for(calibration: Any, kind: str) -> tuple[dict[str, Any] | None, str | None]:
+def calibration_for(
+    calibration: Any,
+    kind: str,
+    *,
+    engine: str = "cohere",
+) -> tuple[dict[str, Any] | None, str | None]:
     """Get validated per-kind calibration parameters."""
 
     if kind not in {"screen", "choice", "noul", "score"}:
         return None, f"unsupported calibration kind {kind!r}"
     if not isinstance(calibration, Mapping):
+        if str(engine).strip().lower() == "md1":
+            return None, f"no valid md1 calibration for kind {kind!r}"
         return None, f"no valid calibration for kind {kind!r}"
+
+    normalized_engine = str(engine).strip().lower()
+    if normalized_engine == "md1":
+        engines = calibration.get("engines")
+        if isinstance(engines, Mapping):
+            md1_entry = engines.get("md1")
+            if isinstance(md1_entry, Mapping):
+                md1_kinds = md1_entry.get("kinds")
+                if isinstance(md1_kinds, Mapping):
+                    parsed = _valid_calibration(md1_kinds.get(kind))
+                    if parsed is not None:
+                        return parsed, None
+        return None, f"no valid md1 calibration for kind {kind!r}"
+
+    engines = calibration.get("engines")
+    if isinstance(engines, Mapping):
+        cohere_entry = engines.get("cohere")
+        if isinstance(cohere_entry, Mapping):
+            cohere_kinds = cohere_entry.get("kinds")
+            if isinstance(cohere_kinds, Mapping):
+                parsed = _valid_calibration(cohere_kinds.get(kind))
+                if parsed is not None:
+                    return parsed, None
 
     by_kind = calibration.get("kinds")
     if isinstance(by_kind, Mapping):

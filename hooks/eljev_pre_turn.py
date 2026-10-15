@@ -159,6 +159,8 @@ def _intent_request(prompt: str, payload: dict[str, Any]) -> tuple[dict[str, Any
         },
         "session_id": payload.get("sessionId") or payload.get("session_id"),
     }
+    if eljev_config is not None and eljev_config.engine() == "md1":
+        request["path"] = "/v1/decide"
     return request, cleaned
 
 
@@ -189,11 +191,20 @@ def _request_from_payload(payload: dict[str, Any], mode: str) -> tuple[dict[str,
 def _request_body(request: dict[str, Any]) -> tuple[str, str, dict[str, Any]]:
     path = request.get("path")
     if not isinstance(path, str):
-        path = "/v1/decide" if "question" in request else "/v1/screen"
-    if path not in {"/v1/decide", "/v1/screen"}:
-        raise ValueError("hook path must be /v1/decide or /v1/screen")
+        if "question" in request:
+            path = "/v1/decide"
+        elif "state" in request:
+            path = "/v1/gate"
+        else:
+            path = "/v1/screen"
+    if path not in {"/v1/decide", "/v1/screen", "/v1/gate"}:
+        raise ValueError("hook path must be /v1/decide, /v1/screen, or /v1/gate")
     if path == "/v1/decide":
         body = {"state": request.get("state"), "question": request.get("question")}
+    elif path == "/v1/gate":
+        body = {"state": request.get("state"), "session_id": request.get("session_id")}
+        if "engine" in request:
+            body["engine"] = request.get("engine")
     else:
         body = {
             "criterion": request.get("criterion"),

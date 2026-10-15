@@ -39,6 +39,40 @@ class _FakeSystemOne:
         return self.behavior
 
 
+class _FakeMD1:
+    def __init__(self, *, decide_behavior=None, screen_behavior=None, gate_behavior=None) -> None:
+        self.decide_behavior = decide_behavior
+        self.screen_behavior = screen_behavior
+        self.gate_behavior = gate_behavior
+        self.decide_calls: list[tuple[object, object]] = []
+        self.screen_calls: list[tuple[str, list[object], int | None]] = []
+        self.gate_calls: list[tuple[object, str | None]] = []
+
+    def decide(self, state, question):  # noqa: ANN001
+        self.decide_calls.append((state, question))
+        if isinstance(self.decide_behavior, BaseException):
+            raise self.decide_behavior
+        if callable(self.decide_behavior):
+            return self.decide_behavior(state, question)
+        return self.decide_behavior
+
+    def screen(self, criterion: str, candidates, *, top_n=None):  # noqa: ANN001
+        self.screen_calls.append((criterion, list(candidates), top_n))
+        if isinstance(self.screen_behavior, BaseException):
+            raise self.screen_behavior
+        if callable(self.screen_behavior):
+            return self.screen_behavior(criterion, candidates, top_n=top_n)
+        return self.screen_behavior
+
+    def gate(self, state, *, session_id=None):  # noqa: ANN001
+        self.gate_calls.append((state, session_id))
+        if isinstance(self.gate_behavior, BaseException):
+            raise self.gate_behavior
+        if callable(self.gate_behavior):
+            return self.gate_behavior(state, session_id=session_id)
+        return self.gate_behavior
+
+
 class _FakeRunCohere:
     def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
         self.endpoint = ""
@@ -95,6 +129,10 @@ class DaemonTests(unittest.TestCase):
         *,
         systemone_behavior=None,
         cohere_endpoint: str = "",
+        md1_endpoint: str = "",
+        md1_decide_behavior=None,
+        md1_screen_behavior=None,
+        md1_gate_behavior=None,
     ) -> tuple[daemon.EljevHTTPServer, threading.Thread]:
         default_result = {
             "schema": "eljev.decision/1",
@@ -107,6 +145,12 @@ class DaemonTests(unittest.TestCase):
         server = daemon.create_server(port=0)
         server.cohere = _FakeCohere(endpoint=cohere_endpoint)
         server.systemone = _FakeSystemOne(behavior)
+        server.md1_client = type("MD1ClientStub", (), {"endpoint": md1_endpoint})()
+        server.md1 = _FakeMD1(
+            decide_behavior=md1_decide_behavior,
+            screen_behavior=md1_screen_behavior,
+            gate_behavior=md1_gate_behavior,
+        )
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         self._servers.append((server, thread))
@@ -172,6 +216,13 @@ class DaemonTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["pid"], os.getpid())
         self.assertEqual(body["version"], "0.2.0")
+        self.assertEqual(body["engines"]["md1"], "absent")
+
+    def test_health_reports_md1_ready_when_md1_endpoint_is_configured(self):
+        server, _ = self._start_server(md1_endpoint="https://vcinn.services.ai.azure.com")
+        status, body = self._request(server, "GET", "/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["engines"]["md1"], "ready")
 
     def test_origin_header_is_forbidden(self):
         server, _ = self._start_server()
@@ -245,6 +296,177 @@ class DaemonTests(unittest.TestCase):
         self.assertEqual(body["status"], "engine_error")
         self.assertEqual(body["exit_code"], 2)
         self.assertEqual(body["error_kind"], "timeout")
+
+    def test_systemone_malformed_error_returns_invalid_response_with_safe_note(self):
+        server, _ = self._start_server(
+            systemone_behavior=SystemOneError("malformed", "raw provider payload leaked")
+        )
+        status, body = self._request(
+            server,
+            "POST",
+            "/v1/decide",
+            body=self._valid_decide_payload(),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["status"], "invalid_response")
+        self.assertEqual(body["exit_code"], 2)
+        self.assertEqual(body["error_kind"], "malformed")
+        self.assertEqual(body["notes"], ["System One returned a malformed response"])
+        self.assertNotIn("raw provider payload leaked", json.dumps(body, ensure_ascii=False))
+
+    def test_decide_engine_md1_routes_to_md1_engine(self):
+        md1_decision = {
+            "schema": "eljev.decision/1",
+            "shape": "decide",
+            "status": "selected",
+            "exit_code": 0,
+            "choice": "alpha",
+        }
+        server, _ = self._start_server(
+            md1_endpoint="https://vcinn.services.ai.azure.com",
+            md1_decide_behavior=md1_decision,
+        )
+        payload = self._valid_decide_payload()
+        payload["engine"] = "md1"
+        status, body = self._request(
+            server,
+            "POST",
+            "/v1/decide",
+            body=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["choice"], "alpha")
+        self.assertEqual(len(server.md1.decide_calls), 1)
+        self.assertEqual(len(server.systemone.calls), 0)
+
+    def test_screen_engine_md1_routes_to_md1_screen(self):
+        md1_screen = {
+            "schema": "eljev.decision/1",
+            "shape": "screen",
+            "status": "selected",
+            "exit_code": 0,
+            "choice": "beta",
+            "results": [{"id": "beta", "index": 1, "relevance_score": 0.9}],
+            "tier_path": ["pregate", "md1"],
+        }
+        server, _ = self._start_server(
+            md1_endpoint="https://vcinn.services.ai.azure.com",
+            md1_screen_behavior=md1_screen,
+        )
+        status, body = self._request(
+            server,
+            "POST",
+            "/v1/screen",
+            body={
+                "criterion": "pick best candidate",
+                "candidates": [
+                    {"id": "alpha", "text": "candidate alpha"},
+                    {"id": "beta", "text": "candidate beta"},
+                ],
+                "engine": "md1",
+                "top_n": 2,
+            },
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["choice"], "beta")
+        self.assertEqual(len(server.md1.screen_calls), 1)
+        self.assertEqual(server.md1.screen_calls[0][0], "pick best candidate")
+
+    def test_unexpected_screen_exception_returns_500_internal_without_traceback(self):
+        server, _ = self._start_server(
+            md1_endpoint="https://vcinn.services.ai.azure.com",
+            md1_screen_behavior=RuntimeError("screen boom"),
+        )
+        status, body = self._request(
+            server,
+            "POST",
+            "/v1/screen",
+            body={
+                "criterion": "pick best candidate",
+                "candidates": [
+                    {"id": "alpha", "text": "candidate alpha"},
+                    {"id": "beta", "text": "candidate beta"},
+                ],
+                "engine": "md1",
+                "top_n": 2,
+            },
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 500)
+        self.assertEqual(body["error_kind"], "internal")
+        self.assertEqual(body["message"], "internal server error")
+        self.assertNotIn("Traceback", json.dumps(body, ensure_ascii=False))
+
+    def test_gate_endpoint_engine_md1_returns_gate_envelope(self):
+        gate_result = {
+            "schema": "eljev.gate/1",
+            "session_id": "session-42",
+            "engine": "Decision-1",
+            "status": "selected",
+            "exit_code": 0,
+            "tier": "fast_direct",
+            "intent": "code_modification",
+            "needs_deep_analysis": 0.05,
+            "enforceable": True,
+            "extension_mode": "enforce",
+            "coverage_policy": "calibrated",
+            "budget_text": "[gate]",
+            "decisions": {},
+            "elapsed_ms": 1.5,
+            "error_kind": None,
+            "notes": [],
+        }
+        server, _ = self._start_server(
+            md1_endpoint="https://vcinn.services.ai.azure.com",
+            md1_gate_behavior=gate_result,
+        )
+        status, body = self._request(
+            server,
+            "POST",
+            "/v1/gate",
+            body={"state": "Please implement this", "engine": "md1", "session_id": "session-42"},
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["schema"], "eljev.gate/1")
+        self.assertEqual(body["session_id"], "session-42")
+        self.assertTrue(body["enforceable"])
+        self.assertEqual(len(server.md1.gate_calls), 1)
+
+    def test_gate_rejects_state_longer_than_max_chars_with_exit_code_one(self):
+        server, _ = self._start_server(md1_endpoint="https://vcinn.services.ai.azure.com")
+        too_large_state = "x" * 100_001
+        status, body = self._request(
+            server,
+            "POST",
+            "/v1/gate",
+            body={"state": too_large_state, "engine": "md1", "session_id": "session-too-large"},
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(body["error_kind"], "invalid_input")
+        self.assertEqual(body["exit_code"], 1)
+
+    def test_gate_endpoint_maps_systemone_malformed_to_invalid_response_with_safe_note(self):
+        server, _ = self._start_server(
+            systemone_behavior=SystemOneError("malformed", "raw provider details")
+        )
+        status, body = self._request(
+            server,
+            "POST",
+            "/v1/gate",
+            body={"state": "Investigate this request", "engine": "cohere", "session_id": "s-cohere"},
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["schema"], "eljev.gate/1")
+        self.assertEqual(body["status"], "invalid_response")
+        self.assertEqual(body["error_kind"], "malformed")
+        self.assertEqual(body["notes"], ["System One returned a malformed response"])
+        self.assertNotIn("raw provider details", json.dumps(body, ensure_ascii=False))
 
     def test_unexpected_systemone_exception_returns_500_internal_without_traceback(self):
         server, _ = self._start_server(systemone_behavior=RuntimeError("boom"))

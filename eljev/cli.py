@@ -474,10 +474,17 @@ def _daemon_status() -> int:
     return code
 
 
-def _screen(args: list[str]) -> int:
+def _validate_engine(raw: object) -> str:
+    value = str(raw).strip().lower()
+    if value not in {"md1", "cohere"}:
+        raise CLIInputError("--engine must be one of: md1, cohere")
+    return value
+
+
+def _screen(args: list[str], *, default_engine: str = "cohere") -> int:
     options = _parse_options(
         args,
-        value_options={"criterion", "candidates", "text", "top-n"},
+        value_options={"criterion", "candidates", "text", "top-n", "tier", "engine"},
         flag_options={"json"},
     )
     criterion = options.get("criterion")
@@ -497,14 +504,25 @@ def _screen(args: list[str]) -> int:
             top_n = int(str(options["top-n"]))
         except ValueError as exc:
             raise CLIInputError("--top-n must be an integer") from exc
+    kwargs: dict[str, object] = {"top_n": top_n}
+    if "tier" in options:
+        kwargs["tier"] = str(options["tier"])
+    if "engine" in options:
+        kwargs["engine"] = _validate_engine(options["engine"])
+    elif default_engine == "md1":
+        kwargs["engine"] = config.engine(default=default_engine)
 
-    result = EljevClient().screen(criterion, candidates, top_n=top_n)
+    result = EljevClient().screen(criterion, candidates, **kwargs)
     _emit(result)
     return _exit_code(result)
 
 
-def _decide(args: list[str]) -> int:
-    options = _parse_options(args, value_options={"state", "question", "state-text"}, flag_options=set())
+def _decide(args: list[str], *, default_engine: str = "cohere") -> int:
+    options = _parse_options(
+        args,
+        value_options={"state", "question", "state-text", "engine"},
+        flag_options=set(),
+    )
     state_path = options.get("state")
     state_text = options.get("state-text")
     question_path = options.get("question")
@@ -514,7 +532,34 @@ def _decide(args: list[str]) -> int:
         raise CLIInputError("--question is required")
     state = state_text if state_text is not None else _load_json_file(str(state_path))
     question = _load_json_file(question_path)
-    result = EljevClient().decide(state, question)
+    kwargs: dict[str, object] = {}
+    if "engine" in options:
+        kwargs["engine"] = _validate_engine(options["engine"])
+    elif default_engine == "md1":
+        kwargs["engine"] = config.engine(default=default_engine)
+    result = EljevClient().decide(state, question, **kwargs)
+    _emit(result)
+    return _exit_code(result)
+
+
+def _gate(args: list[str], *, default_engine: str = "md1") -> int:
+    options = _parse_options(
+        args,
+        value_options={"state", "state-text", "session-id", "engine"},
+        flag_options=set(),
+    )
+    state_path = options.get("state")
+    state_text = options.get("state-text")
+    if (state_path is None) == (state_text is None):
+        raise CLIInputError("provide exactly one of --state or --state-text")
+    state = state_text if state_text is not None else _load_json_file(str(state_path))
+    session_id = str(options["session-id"]) if "session-id" in options else None
+    engine = (
+        _validate_engine(options["engine"])
+        if "engine" in options
+        else config.engine(default=default_engine)
+    )
+    result = EljevClient().gate(state, session_id=session_id, engine=engine)
     _emit(result)
     return _exit_code(result)
 
@@ -558,7 +603,7 @@ def _show_log(args: list[str]) -> int:
     return 0
 
 
-def _status() -> int:
+def _status(*, default_engine: str = "cohere") -> int:
     enabled, source = config.enabled_state()
     _, daemon = _daemon_status_result()
     payload = {
@@ -570,6 +615,10 @@ def _status() -> int:
         "daemon": daemon,
         "cohere_endpoint_configured": bool(config.cohere_endpoint()),
         "cohere_deployment": config.cohere_deployment(),
+        "engine": config.engine(default=default_engine),
+        "md1_endpoint_configured": bool(config.md1_endpoint()),
+        "md1_deployment": config.md1_deployment(),
+        "extension_mode": config.extension_mode(),
         "auth_mode": config.auth_mode(),
         "azure_subscription": config.azure_subscription() or None,
         "coverage_policy": config.coverage_policy(),
@@ -610,7 +659,19 @@ def _validate_endpoint(raw: str) -> str:
 def _configure(args: list[str]) -> int:
     options = _parse_options(
         args,
-        value_options={"endpoint", "deployment", "policy", "auth", "hook-mode", "subscription", "hook-timeout-ms"},
+        value_options={
+            "endpoint",
+            "deployment",
+            "policy",
+            "auth",
+            "hook-mode",
+            "subscription",
+            "hook-timeout-ms",
+            "engine",
+            "md1-endpoint",
+            "md1-deployment",
+            "extension-mode",
+        },
         flag_options=set(),
     )
     if not options:
@@ -657,24 +718,53 @@ def _configure(args: list[str]) -> int:
         except ValueError:
             raise CLIInputError("--hook-timeout-ms must be a positive integer")
         updates["hook_timeout_ms"] = timeout_ms
+    if "engine" in options:
+        engine = str(options["engine"]).strip().lower()
+        if engine not in config.VALID_ENGINES:
+            raise CLIInputError(f"--engine must be one of: {', '.join(config.VALID_ENGINES)}")
+        updates["engine"] = engine
+    if "md1-endpoint" in options:
+        raw_md1_endpoint = str(options["md1-endpoint"])
+        try:
+            updates["md1_endpoint"] = config.normalize_md1_endpoint(raw_md1_endpoint)
+        except ValueError as exc:
+            raise CLIInputError(str(exc)) from exc
+    if "md1-deployment" in options:
+        md1_deployment = str(options["md1-deployment"]).strip()
+        if not md1_deployment:
+            raise CLIInputError("--md1-deployment must be non-empty")
+        updates["md1_deployment"] = md1_deployment
+    if "extension-mode" in options:
+        extension_mode = str(options["extension-mode"]).strip().lower()
+        if extension_mode not in config.VALID_EXTENSION_MODES:
+            raise CLIInputError(
+                f"--extension-mode must be one of: {', '.join(config.VALID_EXTENSION_MODES)}"
+            )
+        updates["extension_mode"] = extension_mode
 
     saved = config.save_config(updates)
-    _emit(
-        {
-            "status": "configured",
-            "config": {
-                "enabled": bool(saved.get("enabled", True)),
-                "cohere_endpoint": config.cohere_endpoint(),
-                "cohere_endpoint_configured": bool(config.cohere_endpoint()),
-                "cohere_deployment": config.cohere_deployment(),
-                "coverage_policy": config.coverage_policy(),
-                "auth": config.auth_mode(),
-                "subscription": config.azure_subscription() or None,
-                "hook_mode": config.hook_mode(),
-            },
-            "config_path": str(config.config_path()),
-        }
-    )
+    result: dict[str, object] = {
+        "status": "configured",
+        "config": {
+            "enabled": bool(saved.get("enabled", True)),
+            "cohere_endpoint": config.cohere_endpoint(),
+            "cohere_endpoint_configured": bool(config.cohere_endpoint()),
+            "cohere_deployment": config.cohere_deployment(),
+            "engine": config.engine(),
+            "md1_endpoint": config.md1_endpoint(),
+            "md1_endpoint_configured": bool(config.md1_endpoint()),
+            "md1_deployment": config.md1_deployment(),
+            "extension_mode": config.extension_mode(),
+            "coverage_policy": config.coverage_policy(),
+            "auth": config.auth_mode(),
+            "subscription": config.azure_subscription() or None,
+            "hook_mode": config.hook_mode(),
+        },
+        "config_path": str(config.config_path()),
+    }
+    if config.engine() == "md1" and os.environ.get("ELJEV_SYSTEMONE_URL", "").strip():
+        result["notes"] = ["ELJEV_SYSTEMONE_URL is ignored when engine is md1"]
+    _emit(result)
     return 0
 
 
@@ -799,19 +889,85 @@ def _uninstall_hook(args: list[str]) -> int:
     return 0
 
 
+def _extension_template_path() -> Path:
+    return config.repo_root() / ".github" / "extensions" / "el-mds" / "extension.mjs"
+
+
+def _extension_target_path(scope: str, repo: str | None) -> Path:
+    if scope == "repo":
+        root = Path(repo).resolve() if repo else Path.cwd().resolve()
+        return root / ".github" / "extensions" / "el-mds" / "extension.mjs"
+    copilot_home = os.environ.get("COPILOT_HOME")
+    if copilot_home and copilot_home.strip():
+        base = Path(copilot_home).expanduser().resolve()
+    else:
+        base = Path.home() / ".copilot"
+    return base / "extensions" / "el-mds" / "extension.mjs"
+
+
+def _render_extension_template(text: str) -> str:
+    return (
+        text.replace("__ELJEV_REPO_ROOT__", str(config.repo_root().resolve()))
+        .replace("__ELJEV_PORT__", str(os.environ.get("ELJEV_PORT", "8787")).strip() or "8787")
+    )
+
+
+def _install_extension(args: list[str]) -> int:
+    options = _parse_options(
+        args,
+        value_options={"scope", "repo"},
+        flag_options={"force"},
+    )
+    scope = _parse_scope(options)
+    repo = str(options["repo"]) if "repo" in options else None
+    force = bool(options.get("force", False))
+    source = _extension_template_path()
+    if not source.exists():
+        raise CLIInputError(f"extension template not found: {source}")
+    target = _extension_target_path(scope, repo)
+    if target.exists() and not force:
+        raise CLIInputError(f"extension file exists: {target} (use --force to overwrite)")
+
+    rendered = _render_extension_template(source.read_text(encoding="utf-8"))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(rendered, encoding="utf-8")
+    _emit({"status": "installed", "path": str(target)})
+    return 0
+
+
+def _uninstall_extension(args: list[str]) -> int:
+    options = _parse_options(
+        args,
+        value_options={"scope", "repo"},
+        flag_options=set(),
+    )
+    scope = _parse_scope(options)
+    repo = str(options["repo"]) if "repo" in options else None
+    target = _extension_target_path(scope, repo)
+    if not target.exists():
+        _emit({"status": "absent", "path": str(target)})
+        return 0
+    target.unlink()
+    _emit({"status": "uninstalled", "path": str(target)})
+    return 0
+
+
 def _help() -> int:
     sys.stdout.write(
         "eljev on|enable                          (enable automatic routing and start daemon)\n"
         "eljev off|disable                        (disable automatic routing and stop daemon)\n"
         "eljev status                             (show effective config and daemon status)\n"
-        "eljev configure [--endpoint URL] [--deployment NAME] [--policy P] [--auth M] [--subscription ID] [--hook-mode H]\n"
+        "eljev configure [--endpoint URL] [--deployment NAME] [--policy P] [--auth M] [--subscription ID] [--hook-mode H] [--engine md1|cohere] [--md1-endpoint URL] [--md1-deployment NAME] [--extension-mode advisory|enforce]\n"
         "eljev install-hook [--scope repo|user] [--repo DIR] [--timeout-sec N] [--force]\n"
         "eljev uninstall-hook [--scope repo|user] [--repo DIR]\n"
+        "eljev install-extension [--scope repo|user] [--repo DIR] [--force]\n"
+        "eljev uninstall-extension [--scope repo|user] [--repo DIR]\n"
         "eljev log [N] [--limit N]               (show last N decisions)\n"
-        "eljev screen --criterion \"...\" --candidates candidates.json [--top-n K] [--json]\n"
+        "eljev screen --criterion \"...\" --candidates candidates.json [--top-n K] [--tier auto|md1|cohere|local|pregate_only] [--engine md1|cohere] [--json]\n"
         "eljev screen --criterion \"...\" --text \"one candidate\"\n"
-        "eljev decide --state state.json --question question.json\n"
-        "eljev decide --state-text \"...\" --question question.json\n"
+        "eljev decide --state state.json --question question.json [--engine md1|cohere]\n"
+        "eljev decide --state-text \"...\" --question question.json [--engine md1|cohere]\n"
+        "eljev gate --state state.json|--state-text \"...\" [--session-id ID] [--engine md1|cohere]\n"
         "eljev health\n"
         "eljev daemon start|stop|status\n"
         "eljev version\n"
@@ -819,7 +975,7 @@ def _help() -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, default_engine: str = "cohere") -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     if not arguments or arguments[0] in {"-h", "--help"}:
         return _help()
@@ -834,19 +990,25 @@ def main(argv: list[str] | None = None) -> int:
         if command in {"off", "disable"}:
             return _set_enabled(False)
         if command == "status":
-            return _status()
+            return _status(default_engine=default_engine)
         if command == "configure":
             return _configure(arguments[1:])
         if command == "install-hook":
             return _install_hook(arguments[1:])
         if command == "uninstall-hook":
             return _uninstall_hook(arguments[1:])
+        if command == "install-extension":
+            return _install_extension(arguments[1:])
+        if command == "uninstall-extension":
+            return _uninstall_extension(arguments[1:])
         if command == "log":
             return _show_log(arguments[1:])
         if command == "screen":
-            return _screen(arguments[1:])
+            return _screen(arguments[1:], default_engine=default_engine)
         if command == "decide":
-            return _decide(arguments[1:])
+            return _decide(arguments[1:], default_engine=default_engine)
+        if command == "gate":
+            return _gate(arguments[1:], default_engine="md1")
         if command == "health":
             if len(arguments) != 1:
                 raise CLIInputError("health does not accept options")
@@ -873,4 +1035,8 @@ def main(argv: list[str] | None = None) -> int:
         return _invalid(str(exc))
 
 
-__all__ = ["main"]
+def main_mds(argv: list[str] | None = None) -> int:
+    return main(argv, default_engine="md1")
+
+
+__all__ = ["main", "main_mds"]

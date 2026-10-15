@@ -9,14 +9,22 @@ from pathlib import Path
 import sys
 import tempfile
 from typing import Any
+from urllib.parse import urlsplit
 
 
 DEFAULT_DEPLOYMENT = "Cohere-rerank-v4.0-pro"
+DEFAULT_MD1_DEPLOYMENT = "Decision-1"
+DEFAULT_ENGINE = "cohere"
+DEFAULT_EXTENSION_MODE = "advisory"
 DEFAULT_POLICY = "always_abstain_v0"
 DEFAULT_HOOK_TIMEOUT_MS = 750
+MD1_PATH = "/providers/microsoft/v1/systemone"
 VALID_POLICIES = ("always_abstain_v0", "calibrated")
 VALID_AUTH = ("azcli", "managed_identity")
 VALID_HOOK_MODES = ("intent", "marker")
+VALID_ENGINES = ("md1", "cohere")
+VALID_EXTENSION_MODES = ("advisory", "enforce")
+ALLOWED_MD1_HOST_SUFFIXES = (".services.ai.azure.com", ".cognitiveservices.azure.com")
 
 
 def repo_root() -> Path:
@@ -157,6 +165,108 @@ def cohere_deployment() -> str:
     if isinstance(configured, str):
         return configured
     return DEFAULT_DEPLOYMENT
+
+
+def normalize_md1_endpoint(raw: str) -> str:
+    text = str(raw).strip()
+    parts = urlsplit(text)
+    if parts.scheme.lower() != "https" or not parts.hostname:
+        raise ValueError("md1 endpoint must use https://")
+    if parts.username or parts.password or parts.query or parts.fragment:
+        raise ValueError("md1 endpoint must not contain credentials, query, or fragment")
+    host = parts.hostname.lower()
+    if not host.endswith(ALLOWED_MD1_HOST_SUFFIXES):
+        raise ValueError(
+            "md1 endpoint host must end with .services.ai.azure.com or .cognitiveservices.azure.com"
+        )
+    try:
+        parts.port
+    except ValueError as exc:
+        raise ValueError("md1 endpoint has an invalid port") from exc
+    path = parts.path.rstrip("/")
+    if path.lower() == MD1_PATH:
+        path = ""
+    if path:
+        raise ValueError(f"unexpected md1 endpoint path: {parts.path}")
+    return f"https://{parts.netloc}"
+
+
+def engine(default: str = DEFAULT_ENGINE) -> str:
+    value = _env_text("ELJEV_ENGINE")
+    if value is None:
+        configured = load_config().get("engine")
+        value = configured if isinstance(configured, str) else None
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in VALID_ENGINES:
+            return normalized
+    return default if default in VALID_ENGINES else DEFAULT_ENGINE
+
+
+def md1_endpoint_raw() -> str:
+    value = _env_text("ELJEV_MD1_ENDPOINT")
+    if value is None:
+        configured = load_config().get("md1_endpoint")
+        value = configured if isinstance(configured, str) else ""
+    return value.strip().rstrip("/")
+
+
+def md1_endpoint() -> str:
+    value = md1_endpoint_raw()
+    if not value:
+        return ""
+    try:
+        return normalize_md1_endpoint(value)
+    except ValueError:
+        return value
+
+
+def md1_deployment() -> str:
+    value = _env_text("ELJEV_MD1_DEPLOYMENT")
+    if value is not None:
+        return value
+    configured = load_config().get("md1_deployment")
+    if isinstance(configured, str) and configured.strip():
+        return configured
+    return DEFAULT_MD1_DEPLOYMENT
+
+
+def md1_timeout_ms() -> int:
+    fallback = 2500
+    for raw in (
+        _env_text("ELJEV_MD1_TIMEOUT_MS"),
+        _env_text("ELJEV_TIMEOUT_MS"),
+    ):
+        if raw is None:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        if value > 0:
+            return value
+    configured = load_config().get("md1_timeout_ms")
+    if isinstance(configured, bool):
+        return fallback
+    if isinstance(configured, int) and configured > 0:
+        return configured
+    if isinstance(configured, str):
+        try:
+            parsed = int(configured.strip())
+        except ValueError:
+            return fallback
+        if parsed > 0:
+            return parsed
+    return fallback
+
+
+def extension_mode() -> str:
+    value = _env_text("ELJEV_EXTENSION_MODE")
+    if value is None:
+        configured = load_config().get("extension_mode")
+        value = configured if isinstance(configured, str) else DEFAULT_EXTENSION_MODE
+    mode = value.strip().lower()
+    return mode if mode in VALID_EXTENSION_MODES else DEFAULT_EXTENSION_MODE
 
 
 def coverage_policy() -> str:

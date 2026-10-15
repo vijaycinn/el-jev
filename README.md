@@ -2,6 +2,8 @@
 
 `el-jev` is a fast typed-decision sidecar and Copilot CLI pre-turn hook that mimics TypeSafe AI Jev decision primitives (**choice**, **noul**, **score**) on Azure AI Foundry Cohere. It is designed for auditable abstention first: by default, non-trivial decisions stay advisory until calibration is fitted on labelled data.
 
+`el-jev` also supports **Microsoft Decision-1** (`md1`) through the `el-mds` extension path (`.github/extensions/el-mds/extension.mjs`) and daemon gate endpoint (`/v1/gate`).
+
 ## How is this different from Jev?
 
 > **Bottom line:** TypeSafe Jev is designed as a decision primitive inside application-owned control flow: code asks a narrow typed question, receives probabilities, and enforces the selected branch. `el-jev` recreates that bounded-decision pattern with Foundry-hosted Cohere Rerank, but its current GitHub Copilot hook uses the result as a pre-turn advisory. Copilot still runs on every turn and remains responsible for choosing tools and actions.
@@ -133,11 +135,15 @@ Set-Location .\el-jev
 python -m pip install -e .
 az login
 python -m eljev configure --endpoint https://<your-resource>.services.ai.azure.com
+python -m eljev configure --engine md1 --md1-endpoint https://<your-resource>.services.ai.azure.com --md1-deployment Decision-1 --extension-mode advisory
 python -m eljev daemon start
 python -m eljev status
 python -m eljev install-hook --scope user
+python -m eljev install-extension --scope user
 # Repo-scoped hook alternative:
 # python -m eljev install-hook --scope repo --repo <path-to-repo>
+# Repo-scoped extension alternative:
+# python -m eljev install-extension --scope repo --repo <path-to-repo>
 ```
 
 ```bash
@@ -146,12 +152,56 @@ cd el-jev
 python -m pip install -e .
 az login
 python -m eljev configure --endpoint https://<your-resource>.services.ai.azure.com
+python -m eljev configure --engine md1 --md1-endpoint https://<your-resource>.services.ai.azure.com --md1-deployment Decision-1 --extension-mode advisory
 python -m eljev daemon start
 python -m eljev status
 python -m eljev install-hook --scope user
+python -m eljev install-extension --scope user
 # Repo-scoped hook alternative:
 # python -m eljev install-hook --scope repo --repo <path-to-repo>
+# Repo-scoped extension alternative:
+# python -m eljev install-extension --scope repo --repo <path-to-repo>
 ```
+
+## Engine pivot: `--engine md1|cohere`
+
+Every decision command supports engine selection:
+
+- `eljev screen ... [--engine md1|cohere]`
+- `eljev decide ... [--engine md1|cohere]`
+- `eljev gate ... [--engine md1|cohere]`
+
+`main_mds` defaults command routing to `md1`. Standard `eljev` defaults to configured engine (`cohere` unless changed).
+
+## `el-mds` gate and extension flow
+
+- `python -m eljev gate --state-text "..."` returns an `eljev.gate/1` envelope with:
+  - `tier`, `intent`, `needs_deep_analysis`, `enforceable`
+  - head decisions for `intent`, `needs_deep_analysis`, and `execution_tier`
+- `.github/extensions/el-mds/extension.mjs` calls `/v1/gate` at `onUserPromptSubmitted`.
+- In `onPreToolUse`, it only denies `task` and `run_dynamic_workflow` when gate says `enforceable=true` and `tier=fast_direct`.
+
+Use:
+
+```powershell
+python -m eljev install-extension --scope user
+python -m eljev uninstall-extension --scope user
+```
+
+```bash
+python -m eljev install-extension --scope user
+python -m eljev uninstall-extension --scope user
+```
+
+## GHCP Extension vs legacy shell hook
+
+| Characteristic | GHCP extension (`el-mds`) | Legacy shell hook (`install-hook`) |
+|---|---|---|
+| Integration point | Copilot extension hooks (`onUserPromptSubmitted`, `onPreToolUse`) | `userPromptTransformed` shell command hook |
+| Tool enforcement | Can deny selected expensive tools when gate is enforceable | Advisory only |
+| Runtime process overhead | In-process Node extension callbacks | Spawns shell + Python process each turn |
+| Gate transport | `/v1/gate` plus optional `/v1/decide` tool | `/v1/decide` / marker payload |
+| Recommended mode | Primary for GHCP harness gating | Compatibility fallback |
 
 Verify with a direct typed decision:
 
@@ -303,6 +353,16 @@ python -m eljev screen --criterion "most urgent customer issue today" --candidat
 python -m eljev screen --criterion "most urgent customer issue today" --candidates ./candidates.json --top-n 3
 ```
 
+Gate:
+
+```powershell
+python -m eljev gate --state-text "User asked to rename one local variable and update one unit test."
+```
+
+```bash
+python -m eljev gate --state-text "User asked to rename one local variable and update one unit test."
+```
+
 ## Observability
 
 - State dir: `<repo>/.eljev/` (override `ELJEV_DIR`).
@@ -321,6 +381,11 @@ Resolution order is **environment variable > `config.json` > default**.
 | on/off switch | `EL_JEV` (ON/OFF), then `ELJEV_ENABLED`, then Windows user env `EL_JEV` from `HKCU\Environment` | `enabled` | ON |
 | Cohere endpoint | `ELJEV_COHERE_ENDPOINT` | `cohere_endpoint` | none (required for Cohere) |
 | deployment | `ELJEV_COHERE_DEPLOYMENT` | `cohere_deployment` | `Cohere-rerank-v4.0-pro` |
+| engine | `ELJEV_ENGINE` | `engine` | `cohere` |
+| MD1 endpoint | `ELJEV_MD1_ENDPOINT` | `md1_endpoint` | none |
+| MD1 deployment | `ELJEV_MD1_DEPLOYMENT` | `md1_deployment` | `Decision-1` |
+| extension mode | `ELJEV_EXTENSION_MODE` | `extension_mode` | `advisory` |
+| MD1 timeout | `ELJEV_MD1_TIMEOUT_MS`, then `ELJEV_TIMEOUT_MS` | `md1_timeout_ms` | 2500 |
 | gate policy | `ELJEV_COVERAGE_POLICY` | `coverage_policy` | `always_abstain_v0` |
 | auth | `ELJEV_AUTH` | `auth` | `azcli` |
 | az token subscription | `ELJEV_AZURE_SUBSCRIPTION` | `subscription` | unset (az default account) |

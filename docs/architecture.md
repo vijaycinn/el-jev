@@ -152,5 +152,44 @@ This prevents browser and DNS-rebinding abuse against paid remote calls.
 - `GET /health`: includes pid, warm state, auth mode, and engine readiness.
 - `POST /v1/screen`: Shape B rerank.
 - `POST /v1/decide`: Shape A `choice | noul | score`.
+- `POST /v1/gate`: `eljev.gate/1` envelope used by `el-mds` extension gating.
 - `GET /v1/log`: recent decision records.
 - `POST /v1/shutdown`: controlled daemon stop.
+
+## Microsoft Decision-1 (`md1`) and `el-mds` gate architecture
+
+`el-jev` now supports a first-class engine pivot between Foundry Cohere and Microsoft Decision-1:
+
+- `--engine cohere` keeps the existing rerank-backed decision flow.
+- `--engine md1` routes typed decisions to:
+
+```text
+POST /providers/microsoft/v1/systemone
+```
+
+through the resident daemon (`MD1Client` + `MD1Engine`).
+
+### Why the resident daemon is required
+
+For both Cohere and MD1, hot-path responsiveness depends on a long-lived local process:
+
+1. **Warm token path**: Entra token minting is amortized and refreshed before expiry.
+2. **Warm TLS + keep-alive**: the daemon reuses live HTTPS connections and retries stale idle sockets once.
+3. **Fail-closed envelope translation**: provider-specific failures are normalized to contract-safe statuses (`engine_error`, `invalid_response`) without leaking provider payloads.
+
+Without the resident daemon, per-turn process start and full auth/TLS setup dominate latency and increase timeout risk.
+
+### GHCP harness gate (`el-mds`) and compound System-1 control
+
+`.github/extensions/el-mds/extension.mjs` applies a two-hook compound gate:
+
+1. **`onUserPromptSubmitted`** sends prompt state to `/v1/gate` and injects returned `budget_text`.
+2. **`onPreToolUse`** enforces only when gate is fully enforceable:
+   - all three gate heads are `selected`
+   - `tier == fast_direct`
+   - `needs_deep_analysis == false`
+   - extension mode is `enforce`
+
+When enforceable, expensive delegation entry points (`task`, `run_dynamic_workflow`) are denied while local direct tools remain allowed. This intentionally keeps straightforward prompts on a bounded System-1 path, preventing unnecessary LLM overthinking and avoidable sub-agent spawning.
+
+If gate responses are unavailable, malformed, or non-enforceable, the extension fails open and does not block tool usage.

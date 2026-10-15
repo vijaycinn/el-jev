@@ -1,7 +1,7 @@
-# el-jev interface contract v1.1
+# el-jev interface contract v1.2
 
 This contract is the integration baseline for daemon, CLI, MCP, hook, and skill surfaces.
-Schema string remains `eljev.decision/1`; v1.1 is additive.
+Schema string remains `eljev.decision/1`; v1.2 is additive.
 
 ---
 
@@ -12,6 +12,7 @@ Schema string remains `eljev.decision/1`; v1.1 is additive.
 3. Default policy abstains (`always_abstain_v0`), so non-trivial decisions are advisory unless calibrated.
 4. Malformed remote output fails closed; transport/auth failures stay advisory.
 5. Never log secrets, tokens, Authorization headers, or raw prompt text.
+6. `el-mds` extension gates must fail open unless gate results are explicitly enforceable.
 
 ---
 
@@ -25,8 +26,9 @@ Shape A (`choice | noul | score`) adds fields without changing schema name:
 - `confidence` (top probability)
 - `probabilities` (`id -> probability`)
 - `margin` (top minus runner-up probability)
-- `noul` (`true`/`false` probability object for `noul`)
-- `score` (expected 1-based score for `score`)
+- `noul` (`float | null`; probability of `"true"` for `noul`)
+- `score` (expected **1-based** score for `score`)
+- `raw_md1_score` (0-based MD1 score for `score`, before 1-based contract mapping)
 - `raw_top_score`, `raw_runner_up`, `margin_raw` are raw Cohere relevance-domain values
 - `calibrated_probability`, `margin_calibrated` are post-temperature gate-domain values
 
@@ -81,11 +83,13 @@ Provider failures must not produce exit code 1.
 
 `calibration_for(cal, kind)` resolves in this order:
 
-1. `cal["kinds"][kind]` for `kind in {"screen","choice","noul","score"}`
-2. Legacy fallback for `screen` only: top-level `temperature`, `threshold`, `margin_threshold`
+1. `cal["engines"]["md1"]["kinds"][kind]` when `engine == "md1"`
+2. `cal["engines"]["cohere"]["kinds"][kind]` when `engine == "cohere"`
+3. `cal["kinds"][kind]` legacy cohere-compatible fallback
+4. Legacy fallback for `screen` only: top-level `temperature`, `threshold`, `margin_threshold`
 
-Per-kind Shape A calibrations are currently hand-supplied.
-`eval/scripts/calibrate.py` currently emits the `screen` block only.
+For `md1`, absence of `engines.md1.kinds.<kind>` must return
+`"no valid md1 calibration for kind '<kind>'"` and abstain in calibrated mode.
 
 ### 5.3 Shared gate logic
 
@@ -138,11 +142,13 @@ Cap violations return HTTP 400 and exit code 1.
 
 Returns status and runtime state including:
 
+- `engine`
 - `pid`
 - `warm`
 - `auth`
 - `engines.cohere` (`ready` | `absent`)
-- `engines.systemone` (`passthrough` | `cohere` | `heuristic`)
+- `engines.md1` (`ready` | `absent`)
+- `engines.systemone` (`passthrough` | `md1` | `cohere` | `heuristic`)
 
 ### 7.2 `GET /v1/log?limit=N`
 
@@ -160,11 +166,23 @@ Shape A request.
 - `state`: string, object, or array
 - response includes additive Shape A fields in §1
 
-### 7.5 `POST /v1/shutdown`
+### 7.5 `POST /v1/gate`
+
+Returns an `eljev.gate/1` envelope:
+
+- `schema`, `session_id`, `engine`, `status`, `exit_code`
+- `tier`, `intent`, `needs_deep_analysis`, `enforceable`
+- `extension_mode`, `coverage_policy`, `budget_text`
+- `decisions` (three typed heads: `intent`, `needs_deep_analysis`, `execution_tier`)
+- `elapsed_ms`, `error_kind`, `notes`
+
+Gate is currently implemented through Microsoft Decision-1 (`md1`) in `el-mds`.
+
+### 7.6 `POST /v1/shutdown`
 
 Graceful daemon shutdown endpoint used by lifecycle commands.
 
-### 7.6 Request hardening
+### 7.7 Request hardening
 
 Daemon rejects:
 
@@ -197,7 +215,27 @@ Rules:
 
 ---
 
-## 9. Settings and environment variables
+## 9. Microsoft Decision-1 (`md1`) and `el-mds`
+
+MD1 route:
+
+```text
+POST https://<resource>.services.ai.azure.com/providers/microsoft/v1/systemone
+```
+
+Rules:
+
+- Request body includes `"model": "<deployment>"`, `"state"`, and `"questions"`.
+- Endpoint host must end with `.services.ai.azure.com` or `.cognitiveservices.azure.com`.
+- Full MD1 route in endpoint config is accepted and normalized to the host base.
+- `score` responses carry both:
+  - `raw_md1_score` (provider-native 0-based)
+  - `score` (contract 1-based expected score)
+- `noul` is represented as `float | null` in decision records.
+
+---
+
+## 10. Settings and environment variables
 
 Resolution order is `env > config.json > default`.
 
@@ -206,6 +244,11 @@ Resolution order is `env > config.json > default`.
 | on/off switch | `EL_JEV`, then `ELJEV_ENABLED`, then Windows user env `EL_JEV` | `enabled` | ON |
 | Cohere endpoint | `ELJEV_COHERE_ENDPOINT` | `cohere_endpoint` | none |
 | deployment | `ELJEV_COHERE_DEPLOYMENT` | `cohere_deployment` | `Cohere-rerank-v4.0-pro` |
+| engine selector | `ELJEV_ENGINE` | `engine` | `cohere` |
+| MD1 endpoint | `ELJEV_MD1_ENDPOINT` | `md1_endpoint` | none |
+| MD1 deployment | `ELJEV_MD1_DEPLOYMENT` | `md1_deployment` | `Decision-1` |
+| extension mode | `ELJEV_EXTENSION_MODE` | `extension_mode` | `advisory` |
+| MD1 timeout | `ELJEV_MD1_TIMEOUT_MS`, then `ELJEV_TIMEOUT_MS` | `md1_timeout_ms` | 2500 |
 | gate policy | `ELJEV_COVERAGE_POLICY` | `coverage_policy` | `always_abstain_v0` |
 | auth | `ELJEV_AUTH` | `auth` | `azcli` |
 | az token subscription | `ELJEV_AZURE_SUBSCRIPTION` | `subscription` | unset (az default account) |
@@ -214,7 +257,7 @@ Resolution order is `env > config.json > default`.
 | logging | `ELJEV_LOGGING` | — | ON |
 | log dir | `ELJEV_LOG_DIR` | — | `<ELJEV_DIR>/logs` |
 | state dir | `ELJEV_DIR` | — | `<repo>/.eljev` |
-| hook timeout | `ELJEV_HOOK_TIMEOUT_MS` | — | 500 |
+| hook timeout | `ELJEV_HOOK_TIMEOUT_MS` | `hook_timeout_ms` | 750 |
 | hook min words | `ELJEV_HOOK_MIN_WORDS` | — | 4 |
 | engine timeout | `ELJEV_TIMEOUT_MS` | — | 2500 |
 | redaction | `ELJEV_REDACT` | — | 1 |
@@ -225,7 +268,23 @@ Legacy: `ELJEV_NO_LOG=1` still disables logging. The legacy hook-enable variable
 
 ---
 
-## 10. Module layout
+## 11. GHCP extension enforcement (`el-mds`)
+
+The `.github/extensions/el-mds/extension.mjs` integration applies a compound gate:
+
+1. `onUserPromptSubmitted` calls `/v1/gate` and injects `budget_text`.
+2. `onPreToolUse` denies high-cost tools only when all are true:
+   - `enforceable == true`
+   - `tier == "fast_direct"`
+   - `status == "selected"`
+   - `exit_code == 0`
+   - tool name is in `{task, run_dynamic_workflow}`
+
+Everything else is fail-open (`undefined` in hook return).
+
+---
+
+## 12. Module layout
 
 | Path | Purpose |
 |---|---|
@@ -233,8 +292,11 @@ Legacy: `ELJEV_NO_LOG=1` still disables logging. The legacy hook-enable variable
 | `eljev/daemon.py` | Loopback HTTP daemon and endpoints |
 | `eljev/cli.py` | CLI entrypoints and lifecycle commands |
 | `eljev/verdict.py` | Shared gate logic |
+| `eljev/engines/auth.py` | Shared Foundry bearer token minting and cache |
 | `eljev/engines/cohere.py` | Cohere client, token management, retries |
+| `eljev/engines/md1.py` | Microsoft Decision-1 client and Shape A adapter |
 | `eljev/engines/systemone.py` | Shape A engine integration and passthrough hooks |
 | `hooks/eljev_pre_turn.py` | Copilot `userPromptTransformed` hook |
+| `.github/extensions/el-mds/extension.mjs` | GHCP extension hooks and `el_mds_decide` tool |
 | `mcp/server.py` | MCP tool surface |
 | `eval/` | Calibration and coverage/risk workflow |

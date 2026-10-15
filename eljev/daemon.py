@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
@@ -19,7 +19,8 @@ from typing import Any
 from . import config
 from .decisionlog import DecisionLog
 from .engines.cohere import CohereClient, CohereError
-from .engines.systemone import SystemOneEngine, SystemOneError
+from .engines.md1 import INTENT_CRITERIA, MD1Client, MD1Engine, _budget_text
+from .engines.systemone import SystemOneEngine, SystemOneError, _serialize_state
 from .pregate import check_pregate
 from .types import Candidate, DecisionRecord, SCHEMA
 from .validate import InputValidationError, validate_request, validate_top_n
@@ -107,6 +108,8 @@ class EljevHTTPServer(ThreadingHTTPServer):
         self.started_at = time.monotonic()
         self.engine_gate = threading.BoundedSemaphore(1)
         self.cohere = CohereClient()
+        self.md1_client = MD1Client()
+        self.md1 = MD1Engine(client=self.md1_client)
         self.systemone = SystemOneEngine(cohere=self.cohere)
         self.decision_log = DecisionLog()
         self.last_warm_ok = False
@@ -211,20 +214,29 @@ class EljevRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/v1/decide":
             self._decide()
             return
+        if parsed.path == "/v1/gate":
+            self._gate()
+            return
         if parsed.path == "/v1/shutdown":
             self._shutdown()
             return
         self._send_json(404, {"error_kind": "http", "message": "not found"})
 
     def _health(self) -> None:
+        active_engine = config.engine()
         policy = config.coverage_policy()
         calibration_version = "none"
         if policy == "calibrated":
-            params, _ = calibration_for(load_calibration(), "screen")
+            params, _ = calibration_for(load_calibration(), "screen", engine=active_engine)
             if params is not None:
                 calibration_version = str(params["calibration_version"])
+        md1_ready = bool(getattr(self.app, "md1_client", None) and self.app.md1_client.endpoint)
+        cohere_ready = bool(self.app.cohere.endpoint)
         passthrough = bool(os.environ.get("ELJEV_SYSTEMONE_URL", "").strip())
-        systemone_mode = "passthrough" if passthrough else "cohere" if self.app.cohere.endpoint else "heuristic"
+        if active_engine == "md1":
+            systemone_mode = "md1" if md1_ready else "heuristic"
+        else:
+            systemone_mode = "passthrough" if passthrough else "cohere" if cohere_ready else "heuristic"
         self._send_json(
             200,
             {
@@ -232,8 +244,10 @@ class EljevRequestHandler(BaseHTTPRequestHandler):
                 "version": VERSION,
                 "schema": SCHEMA,
                 "pid": os.getpid(),
+                "engine": active_engine,
                 "engines": {
-                    "cohere": "ready" if self.app.cohere.endpoint else "absent",
+                    "cohere": "ready" if cohere_ready else "absent",
+                    "md1": "ready" if md1_ready else "absent",
                     "systemone": systemone_mode,
                 },
                 "calibration_version": calibration_version,
@@ -252,161 +266,183 @@ class EljevRequestHandler(BaseHTTPRequestHandler):
     def _screen(self) -> None:
         started = time.perf_counter()
         try:
-            payload = self._read_json()
-            if not isinstance(payload, Mapping):
-                raise InputValidationError("request body must be an object")
-            validated = validate_request(payload.get("criterion"), payload.get("candidates"))
-            top_n = validate_top_n(payload.get("top_n"), len(validated.candidates))
-            tier = payload.get("tier", "auto")
-            if tier not in {"auto", "cohere", "local", "pregate_only"}:
-                raise InputValidationError("tier must be auto, cohere, local, or pregate_only")
-        except InputValidationError as exc:
-            self._send_json(
-                400,
-                {"error_kind": "invalid_input", "message": str(exc), "exit_code": 1},
-            )
-            return
-
-        candidates = validated.candidates
-        pregate_result = check_pregate(candidates)
-        pregate_end = time.perf_counter()
-        policy = config.coverage_policy()
-        if pregate_result.trivial:
-            record = DecisionRecord(
-                shape="screen",
-                criterion=validated.criterion,
-                n_candidates=len(candidates),
-                tier_path=["pregate"],
-                status="trivial",
-                exit_code=2,
-                escalation_reason=None,
-                notes=[pregate_result.reason or "local pre-gate"],
-                elapsed_ms=_elapsed(started, started, pregate_end, pregate_end),
-                coverage_policy=policy,
-            )
-            self.app.decision_log.append(record, candidates)
-            self._send_json(200, record.to_dict())
-            return
-
-        if tier == "pregate_only":
-            record = DecisionRecord(
-                shape="screen",
-                criterion=validated.criterion,
-                n_candidates=len(candidates),
-                tier_path=["pregate"],
-                status="needs_review",
-                exit_code=2,
-                escalation_reason="n_gt_local_cap",
-                notes=["pregate_only requested but request was non-trivial"],
-                elapsed_ms=_elapsed(started, started, pregate_end, pregate_end),
-                coverage_policy=policy,
-            )
-            self.app.decision_log.append(record, candidates)
-            self._send_json(200, record.to_dict())
-            return
-
-        if tier == "local":
-            record = DecisionRecord(
-                shape="screen",
-                criterion=validated.criterion,
-                n_candidates=len(candidates),
-                tier_path=["pregate", "local"],
-                status="engine_error",
-                exit_code=2,
-                error_kind="daemon_unavailable",
-                notes=["local screen engine is not configured"],
-                elapsed_ms=_elapsed(started, started, pregate_end, pregate_end),
-                coverage_policy=policy,
-            )
-            self.app.decision_log.append(record, candidates)
-            self._send_json(200, record.to_dict())
-            return
-
-        if not self.app.cohere.endpoint:
-            record = DecisionRecord(
-                shape="screen",
-                criterion=validated.criterion,
-                n_candidates=len(candidates),
-                tier_path=["pregate", "cohere"],
-                engine=config.cohere_deployment(),
-                status="engine_error",
-                exit_code=2,
-                error_kind="daemon_unavailable",
-                notes=["ELJEV_COHERE_ENDPOINT is not configured"],
-                elapsed_ms=_elapsed(started, started, pregate_end, pregate_end),
-                coverage_policy=policy,
-            )
-            self.app.decision_log.append(record, candidates)
-            self._send_json(200, record.to_dict())
-            return
-
-        engine_started = time.perf_counter()
-        try:
-            with self.app.engine_gate:
-                response = self.app.cohere.rerank(
-                    validated.criterion, [candidate.text for candidate in candidates], top_n
+            try:
+                payload = self._read_json()
+                if not isinstance(payload, Mapping):
+                    raise InputValidationError("request body must be an object")
+                validated = validate_request(payload.get("criterion"), payload.get("candidates"))
+                top_n = validate_top_n(payload.get("top_n"), len(validated.candidates))
+                tier = payload.get("tier", "auto")
+                if tier not in {"auto", "md1", "cohere", "local", "pregate_only"}:
+                    raise InputValidationError("tier must be auto, md1, cohere, local, or pregate_only")
+                engine_raw = payload.get("engine")
+                if engine_raw is not None:
+                    if (
+                        not isinstance(engine_raw, str)
+                        or engine_raw.strip().lower() not in config.VALID_ENGINES
+                    ):
+                        raise InputValidationError("engine must be md1 or cohere")
+                    req_engine = engine_raw.strip().lower()
+                else:
+                    req_engine = config.engine()
+            except InputValidationError as exc:
+                self._send_json(
+                    400,
+                    {"error_kind": "invalid_input", "message": str(exc), "exit_code": 1},
                 )
-            engine_ended = time.perf_counter()
-        except CohereError as exc:
-            engine_ended = time.perf_counter()
-            malformed = exc.error_kind == "malformed"
+                return
+
+            candidates = validated.candidates
+            pregate_result = check_pregate(candidates)
+            pregate_end = time.perf_counter()
+            policy = config.coverage_policy()
+            if pregate_result.trivial:
+                record = DecisionRecord(
+                    shape="screen",
+                    criterion=validated.criterion,
+                    n_candidates=len(candidates),
+                    tier_path=["pregate"],
+                    status="trivial",
+                    exit_code=2,
+                    escalation_reason=None,
+                    notes=[pregate_result.reason or "local pre-gate"],
+                    elapsed_ms=_elapsed(started, started, pregate_end, pregate_end),
+                    coverage_policy=policy,
+                )
+                self.app.decision_log.append(record, candidates)
+                self._send_json(200, record.to_dict())
+                return
+
+            if tier == "pregate_only":
+                record = DecisionRecord(
+                    shape="screen",
+                    criterion=validated.criterion,
+                    n_candidates=len(candidates),
+                    tier_path=["pregate"],
+                    status="needs_review",
+                    exit_code=2,
+                    escalation_reason="n_gt_local_cap",
+                    notes=["pregate_only requested but request was non-trivial"],
+                    elapsed_ms=_elapsed(started, started, pregate_end, pregate_end),
+                    coverage_policy=policy,
+                )
+                self.app.decision_log.append(record, candidates)
+                self._send_json(200, record.to_dict())
+                return
+
+            if tier == "local":
+                record = DecisionRecord(
+                    shape="screen",
+                    criterion=validated.criterion,
+                    n_candidates=len(candidates),
+                    tier_path=["pregate", "local"],
+                    status="engine_error",
+                    exit_code=2,
+                    error_kind="daemon_unavailable",
+                    notes=["local screen engine is not configured"],
+                    elapsed_ms=_elapsed(started, started, pregate_end, pregate_end),
+                    coverage_policy=policy,
+                )
+                self.app.decision_log.append(record, candidates)
+                self._send_json(200, record.to_dict())
+                return
+
+            if tier == "md1" or (tier == "auto" and req_engine == "md1"):
+                with self.app.engine_gate:
+                    result = self.app.md1.screen(validated.criterion, candidates, top_n=top_n)
+                self.app.decision_log.append(result, candidates)
+                self._send_json(200, result)
+                return
+
+            if not self.app.cohere.endpoint:
+                record = DecisionRecord(
+                    shape="screen",
+                    criterion=validated.criterion,
+                    n_candidates=len(candidates),
+                    tier_path=["pregate", "cohere"],
+                    engine=config.cohere_deployment(),
+                    status="engine_error",
+                    exit_code=2,
+                    error_kind="daemon_unavailable",
+                    notes=["ELJEV_COHERE_ENDPOINT is not configured"],
+                    elapsed_ms=_elapsed(started, started, pregate_end, pregate_end),
+                    coverage_policy=policy,
+                )
+                self.app.decision_log.append(record, candidates)
+                self._send_json(200, record.to_dict())
+                return
+
+            engine_started = time.perf_counter()
+            try:
+                with self.app.engine_gate:
+                    response = self.app.cohere.rerank(
+                        validated.criterion, [candidate.text for candidate in candidates], top_n
+                    )
+                engine_ended = time.perf_counter()
+            except CohereError as exc:
+                engine_ended = time.perf_counter()
+                malformed = exc.error_kind == "malformed"
+                record = DecisionRecord(
+                    shape="screen",
+                    criterion=validated.criterion,
+                    n_candidates=len(candidates),
+                    tier_path=["pregate", "cohere"],
+                    engine=config.cohere_deployment(),
+                    status="invalid_response" if malformed else "engine_error",
+                    exit_code=2,
+                    error_kind=exc.error_kind,
+                    notes=[
+                        "Cohere returned a malformed response"
+                        if malformed
+                        else "Cohere engine call failed"
+                    ],
+                    elapsed_ms=_elapsed(started, started, engine_started, engine_ended),
+                    coverage_policy=policy,
+                )
+                self.app.decision_log.append(record, candidates)
+                self._send_json(200, record.to_dict())
+                return
+
+            verdict = verdict_from_engine(
+                response,
+                candidates,
+                policy=policy,
+                calibration=load_calibration() if policy == "calibrated" else None,
+                top_n=top_n,
+            )
             record = DecisionRecord(
                 shape="screen",
                 criterion=validated.criterion,
                 n_candidates=len(candidates),
                 tier_path=["pregate", "cohere"],
                 engine=config.cohere_deployment(),
-                status="invalid_response" if malformed else "engine_error",
-                exit_code=2,
-                error_kind=exc.error_kind,
-                notes=[
-                    "Cohere returned a malformed response"
-                    if malformed
-                    else "Cohere engine call failed"
-                ],
+                choice=verdict["choice"],
+                choice_index=verdict["choice_index"],
+                status=verdict["status"],
+                exit_code=verdict["exit_code"],
+                raw_top_score=verdict["raw_top_score"],
+                raw_runner_up=verdict["raw_runner_up"],
+                margin_raw=verdict["margin_raw"],
+                calibrated_probability=verdict["calibrated_probability"],
+                margin_calibrated=verdict["margin_calibrated"],
+                calibration_version=verdict["calibration_version"],
+                coverage_policy=verdict["coverage_policy"],
+                results=verdict["results"],
                 elapsed_ms=_elapsed(started, started, engine_started, engine_ended),
-                coverage_policy=policy,
+                escalation_reason=verdict["escalation_reason"],
+                error_kind=verdict["error_kind"],
+                notes=verdict["notes"],
             )
             self.app.decision_log.append(record, candidates)
             self._send_json(200, record.to_dict())
-            return
-
-        verdict = verdict_from_engine(
-            response,
-            candidates,
-            policy=policy,
-            calibration=load_calibration() if policy == "calibrated" else None,
-            top_n=top_n,
-        )
-        record = DecisionRecord(
-            shape="screen",
-            criterion=validated.criterion,
-            n_candidates=len(candidates),
-            tier_path=["pregate", "cohere"],
-            engine=config.cohere_deployment(),
-            choice=verdict["choice"],
-            choice_index=verdict["choice_index"],
-            status=verdict["status"],
-            exit_code=verdict["exit_code"],
-            raw_top_score=verdict["raw_top_score"],
-            raw_runner_up=verdict["raw_runner_up"],
-            margin_raw=verdict["margin_raw"],
-            calibrated_probability=verdict["calibrated_probability"],
-            margin_calibrated=verdict["margin_calibrated"],
-            calibration_version=verdict["calibration_version"],
-            coverage_policy=verdict["coverage_policy"],
-            results=verdict["results"],
-            elapsed_ms=_elapsed(started, started, engine_started, engine_ended),
-            escalation_reason=verdict["escalation_reason"],
-            error_kind=verdict["error_kind"],
-            notes=verdict["notes"],
-        )
-        self.app.decision_log.append(record, candidates)
-        self._send_json(200, record.to_dict())
+        except Exception:
+            self._send_json(500, {"error_kind": "internal", "message": "internal server error"})
 
     def _decide(self) -> None:
         started = time.perf_counter()
         engine_started = started
+        payload: Mapping[str, Any] | None = None
+        req_engine = config.engine()
         try:
             payload = self._read_json()
             if not isinstance(payload, Mapping):
@@ -424,9 +460,22 @@ class EljevRequestHandler(BaseHTTPRequestHandler):
             kind = str(question.get("kind") or question.get("type") or "").strip().lower()
             if kind not in {"choice", "noul", "score"}:
                 raise InputValidationError("question.kind must be choice, noul, or score")
+            engine_raw = payload.get("engine")
+            if engine_raw is not None:
+                if (
+                    not isinstance(engine_raw, str)
+                    or engine_raw.strip().lower() not in config.VALID_ENGINES
+                ):
+                    raise InputValidationError("engine must be md1 or cohere")
+                req_engine = engine_raw.strip().lower()
+            else:
+                req_engine = config.engine()
             engine_started = time.perf_counter()
             with self.app.engine_gate:
-                result = self.app.systemone.decide(state, question)
+                if req_engine == "md1":
+                    result = self.app.md1.decide(state, question)
+                else:
+                    result = self.app.systemone.decide(state, question)
             engine_ended = time.perf_counter()
             self.app.decision_log.append(result)
             self._send_json(200, result)
@@ -452,25 +501,34 @@ class EljevRequestHandler(BaseHTTPRequestHandler):
                 if isinstance(question, Mapping)
                 else "choice"
             )
+            malformed = exc.error_kind == "malformed"
+            status = "invalid_response" if malformed else "engine_error"
+            safe_note = (
+                "System One returned a malformed response"
+                if malformed
+                else "System One engine call failed"
+            )
             record = DecisionRecord(
                 shape="decide",
                 criterion=str(question.get("instructions") or question.get("description") or "")
                 if isinstance(question, Mapping)
                 else "",
                 n_candidates=0,
-                tier_path=["systemone", "cohere"],
-                engine=config.cohere_deployment()
-                if self.app.cohere.endpoint
-                else "local_heuristic",
+                tier_path=["systemone", "md1"] if req_engine == "md1" else ["systemone", "cohere"],
+                engine=(
+                    config.md1_deployment()
+                    if req_engine == "md1"
+                    else (config.cohere_deployment() if self.app.cohere.endpoint else "local_heuristic")
+                ),
                 choice=None,
                 choice_index=None,
-                status="engine_error",
+                status=status,
                 exit_code=2,
                 calibration_version="none",
                 coverage_policy=config.coverage_policy(),
                 elapsed_ms=_elapsed(started, started, engine_started, engine_ended),
                 error_kind=exc.error_kind,
-                notes=[str(exc)],
+                notes=[safe_note],
             )
             body = record.to_dict()
             body.update(
@@ -486,6 +544,140 @@ class EljevRequestHandler(BaseHTTPRequestHandler):
             )
             self.app.decision_log.append(body)
             self._send_json(200, body)
+            return
+        except Exception:
+            self._send_json(500, {"error_kind": "internal", "message": "internal server error"})
+
+    def _gate(self) -> None:
+        payload: Mapping[str, Any] | None = None
+        req_engine = config.engine(default="md1")
+        try:
+            payload = self._read_json()
+            if not isinstance(payload, Mapping):
+                raise InputValidationError("request body must be an object")
+
+            state = payload.get("state")
+            if isinstance(state, (str, dict, list)):
+                try:
+                    _serialize_state(state)
+                except SystemOneError as exc:
+                    if exc.error_kind == "invalid_input":
+                        raise InputValidationError(str(exc)) from exc
+                    raise
+            else:
+                raise InputValidationError("state must be a non-empty string or JSON object/list")
+
+            session_id = payload.get("session_id")
+            if session_id is not None and not isinstance(session_id, str):
+                raise InputValidationError("session_id must be a string")
+
+            engine_raw = payload.get("engine")
+            if engine_raw is not None and (
+                not isinstance(engine_raw, str)
+                or engine_raw.strip().lower() not in config.VALID_ENGINES
+            ):
+                raise InputValidationError("engine must be md1 or cohere")
+            req_engine = (
+                str(engine_raw).strip().lower()
+                if engine_raw is not None
+                else req_engine
+            )
+
+            with self.app.engine_gate:
+                if req_engine == "md1":
+                    result = self.app.md1.gate(state, session_id=session_id)
+                else:
+                    intent_record = self.app.systemone.decide(
+                        state,
+                        {
+                            "id": "intent",
+                            "kind": "choice",
+                            "instructions": "Classify the request intent",
+                            "criteria": INTENT_CRITERIA,
+                        },
+                    )
+                    result = {
+                        "schema": "eljev.gate/1",
+                        "session_id": session_id,
+                        "engine": intent_record.get("engine"),
+                        "status": intent_record.get("status", "needs_review"),
+                        "exit_code": 2,
+                        "tier": "bounded_work",
+                        "intent": intent_record.get("choice"),
+                        "needs_deep_analysis": None,
+                        "enforceable": False,
+                        "extension_mode": config.extension_mode(),
+                        "coverage_policy": config.coverage_policy(),
+                        "budget_text": _budget_text(
+                            "bounded_work",
+                            False,
+                            str(intent_record.get("status", "needs_review")),
+                            intent=(
+                                str(intent_record.get("choice"))
+                                if isinstance(intent_record.get("choice"), str)
+                                else None
+                            ),
+                        ),
+                        "decisions": {"intent": intent_record},
+                        "elapsed_ms": (
+                            intent_record.get("elapsed_ms", {}).get("total", 0.0)
+                            if isinstance(intent_record.get("elapsed_ms"), Mapping)
+                            else 0.0
+                        ),
+                        "error_kind": intent_record.get("error_kind"),
+                        "notes": list(intent_record.get("notes", [])),
+                    }
+
+            decisions = result.get("decisions", {}) if isinstance(result, Mapping) else {}
+            if isinstance(decisions, Mapping):
+                for head_record in decisions.values():
+                    if (
+                        isinstance(head_record, Mapping)
+                        and head_record.get("schema") == SCHEMA
+                    ):
+                        self.app.decision_log.append(head_record)
+            self._send_json(200, result)
+            return
+        except InputValidationError as exc:
+            self._send_json(
+                400,
+                {"error_kind": "invalid_input", "message": str(exc), "exit_code": 1},
+            )
+            return
+        except SystemOneError as exc:
+            self._send_json(
+                200,
+                {
+                    "schema": "eljev.gate/1",
+                    "session_id": payload.get("session_id") if isinstance(payload, Mapping) else None,
+                    "engine": (
+                        config.md1_deployment()
+                        if req_engine == "md1"
+                        else config.cohere_deployment()
+                    ),
+                    "status": "invalid_response" if exc.error_kind == "malformed" else "engine_error",
+                    "exit_code": 2,
+                    "tier": "deep_system2",
+                    "intent": None,
+                    "needs_deep_analysis": None,
+                    "enforceable": False,
+                    "extension_mode": config.extension_mode(),
+                    "coverage_policy": config.coverage_policy(),
+                    "budget_text": _budget_text(
+                        "deep_system2",
+                        False,
+                        "invalid_response" if exc.error_kind == "malformed" else "engine_error",
+                    ),
+                    "decisions": {},
+                    "elapsed_ms": 0.0,
+                    "error_kind": exc.error_kind,
+                    "notes": [
+                        "System One returned a malformed response"
+                        if exc.error_kind == "malformed"
+                        else "System One engine call failed"
+                    ],
+                },
+            )
             return
         except Exception:
             self._send_json(500, {"error_kind": "internal", "message": "internal server error"})
@@ -506,10 +698,17 @@ def create_server(
 
 def _run_warm_loop(server: EljevHTTPServer) -> None:
     while not server._warm_stop.is_set():
+        cohere_ok = False
+        md1_ok = False
         try:
-            server.last_warm_ok = bool(server.cohere.warm())
+            cohere_ok = bool(server.cohere.warm())
         except Exception:
-            server.last_warm_ok = False
+            cohere_ok = False
+        try:
+            md1_ok = bool(server.md1_client.warm())
+        except Exception:
+            md1_ok = False
+        server.last_warm_ok = bool(cohere_ok or md1_ok)
         server._warm_stop.wait(WARM_INTERVAL_S)
 
 
@@ -544,5 +743,6 @@ def run(host: str | None = None, port: int | None = None) -> int:
     finally:
         server._warm_stop.set()
         server.cohere.close()
+        server.md1_client.close()
         server.server_close()
         _remove_pidfile_if_owner(pid_path, pid)

@@ -166,6 +166,7 @@ def _error_record(
     n_candidates: int = 0,
     error_kind: str,
     status: str = "engine_error",
+    exit_code: int = 2,
     note: str,
     tier_path: list[str] | None = None,
 ) -> dict[str, object]:
@@ -177,7 +178,7 @@ def _error_record(
         n_candidates=n_candidates,
         tier_path=tier_path or [],
         status=status,
-        exit_code=2,
+        exit_code=exit_code,
         error_kind=error_kind,
         notes=[note],
     ).to_dict()
@@ -193,6 +194,8 @@ def _response_error_record(
 ) -> dict[str, object]:
     error_kind = "http"
     note = f"daemon returned HTTP {status}"
+    record_status = "engine_error"
+    exit_code = 2
     if isinstance(body, dict):
         candidate_kind = body.get("error_kind")
         if isinstance(candidate_kind, str) and candidate_kind:
@@ -200,11 +203,16 @@ def _response_error_record(
         message = body.get("message")
         if isinstance(message, str) and message:
             note = message
+    if status == 400 and error_kind == "invalid_input":
+        record_status = "invalid_input"
+        exit_code = 1
     return _error_record(
         shape=shape,
         criterion=criterion,
         n_candidates=n_candidates,
         error_kind=error_kind,
+        status=record_status,
+        exit_code=exit_code,
         note=note,
     )
 
@@ -258,6 +266,16 @@ def _validate_decide(state: object, question: object) -> tuple[str, dict[str, ob
     return state, question
 
 
+def _validate_engine(engine: str | None) -> str | None:
+    if engine is None:
+        return None
+    if engine not in {"md1", "cohere"}:
+        from .validate import InputValidationError
+
+        raise InputValidationError("engine must be md1 or cohere", field="engine")
+    return engine
+
+
 class EljevClient:
     """Small client for the loopback daemon."""
 
@@ -295,24 +313,28 @@ class EljevClient:
         *,
         top_n: object | None = None,
         tier: str = "auto",
+        engine: str | None = None,
     ) -> dict[str, object]:
         from .validate import validate_request, validate_top_n
 
         validated = validate_request(criterion, candidates)
         selected_top_n = validate_top_n(top_n, len(validated.candidates))
-        if tier not in {"auto", "cohere", "local", "pregate_only"}:
+        if tier not in {"auto", "md1", "cohere", "local", "pregate_only"}:
             from .validate import InputValidationError
 
             raise InputValidationError(
-                "tier must be auto, cohere, local, or pregate_only",
+                "tier must be auto, md1, cohere, local, or pregate_only",
                 field="tier",
             )
+        selected_engine = _validate_engine(engine)
         request = {
             "criterion": validated.criterion,
             "candidates": [candidate.to_dict() for candidate in validated.candidates],
             "top_n": selected_top_n,
             "tier": tier,
         }
+        if selected_engine is not None:
+            request["engine"] = selected_engine
         try:
             status, body = self._call("POST", "/v1/screen", request)
         except TransportError as exc:
@@ -354,13 +376,23 @@ class EljevClient:
             )
         return body
 
-    def decide(self, state: object, question: object) -> dict[str, object]:
+    def decide(
+        self,
+        state: object,
+        question: object,
+        *,
+        engine: str | None = None,
+    ) -> dict[str, object]:
         normalized_state, normalized_question = _validate_decide(state, question)
+        selected_engine = _validate_engine(engine)
+        payload: dict[str, object] = {"state": normalized_state, "question": normalized_question}
+        if selected_engine is not None:
+            payload["engine"] = selected_engine
         try:
             status, body = self._call(
                 "POST",
                 "/v1/decide",
-                {"state": normalized_state, "question": normalized_question},
+                payload,
             )
         except TransportError as exc:
             return _error_record(
@@ -384,6 +416,136 @@ class EljevClient:
                 status="invalid_response",
                 note="daemon returned a non-object decision record",
             )
+        return body
+
+    def gate(
+        self,
+        state: object,
+        *,
+        session_id: str | None = None,
+        engine: str | None = None,
+    ) -> dict[str, object]:
+        if isinstance(state, str):
+            if not state.strip():
+                from .validate import InputValidationError
+
+                raise InputValidationError(
+                    "state must be a non-empty string or JSON object/list",
+                    field="state",
+                )
+        elif not isinstance(state, (dict, list)):
+            from .validate import InputValidationError
+
+            raise InputValidationError(
+                "state must be a non-empty string or JSON object/list",
+                field="state",
+            )
+
+        selected_engine = _validate_engine(engine)
+        request: dict[str, object] = {"state": state}
+        if session_id is not None:
+            request["session_id"] = session_id
+        if selected_engine is not None:
+            request["engine"] = selected_engine
+        try:
+            status, body = self._call("POST", "/v1/gate", request)
+        except TransportError as exc:
+            return {
+                "schema": "eljev.gate/1",
+                "session_id": session_id,
+                "engine": selected_engine,
+                "status": "engine_error",
+                "exit_code": 2,
+                "tier": "deep_system2",
+                "intent": None,
+                "needs_deep_analysis": None,
+                "enforceable": False,
+                "extension_mode": "advisory",
+                "coverage_policy": "always_abstain_v0",
+                "budget_text": "",
+                "decisions": {},
+                "elapsed_ms": 0.0,
+                "error_kind": exc.error_kind,
+                "notes": [
+                    START_DAEMON_NOTE
+                    if exc.error_kind == "daemon_unavailable"
+                    else str(exc)
+                ],
+            }
+        except ResponseError as exc:
+            return {
+                "schema": "eljev.gate/1",
+                "session_id": session_id,
+                "engine": selected_engine,
+                "status": "engine_error",
+                "exit_code": 2,
+                "tier": "deep_system2",
+                "intent": None,
+                "needs_deep_analysis": None,
+                "enforceable": False,
+                "extension_mode": "advisory",
+                "coverage_policy": "always_abstain_v0",
+                "budget_text": "",
+                "decisions": {},
+                "elapsed_ms": 0.0,
+                "error_kind": exc.error_kind,
+                "notes": [str(exc)],
+            }
+        if status != 200:
+            error_kind = "http"
+            note = f"daemon returned HTTP {status}"
+            response_status = "engine_error"
+            exit_code = 2
+            if isinstance(body, dict):
+                candidate_kind = body.get("error_kind")
+                if isinstance(candidate_kind, str) and candidate_kind:
+                    error_kind = candidate_kind
+                message = body.get("message")
+                if isinstance(message, str) and message:
+                    note = message
+                candidate_exit_code = body.get("exit_code")
+                if isinstance(candidate_exit_code, int):
+                    exit_code = candidate_exit_code
+            if status == 400 and error_kind == "invalid_input":
+                response_status = "invalid_input"
+                exit_code = 1
+            return {
+                "schema": "eljev.gate/1",
+                "session_id": session_id,
+                "engine": selected_engine,
+                "status": response_status,
+                "exit_code": exit_code,
+                "tier": "deep_system2",
+                "intent": None,
+                "needs_deep_analysis": None,
+                "enforceable": False,
+                "extension_mode": "advisory",
+                "coverage_policy": "always_abstain_v0",
+                "budget_text": "",
+                "decisions": {},
+                "elapsed_ms": 0.0,
+                "error_kind": error_kind,
+                "notes": [note],
+            }
+        if not isinstance(body, dict):
+            return {
+                "schema": "eljev.gate/1",
+                "session_id": session_id,
+                "engine": selected_engine,
+                "status": "engine_error",
+                "exit_code": 2,
+                "tier": "deep_system2",
+                "intent": None,
+                "needs_deep_analysis": None,
+                "enforceable": False,
+                "extension_mode": "advisory",
+                "coverage_policy": "always_abstain_v0",
+                "budget_text": "",
+                "decisions": {},
+                "elapsed_ms": 0.0,
+                "error_kind": "malformed",
+                "notes": ["daemon returned a non-object gate response"],
+            }
         return body
 
     def health(self) -> dict[str, object]:
@@ -451,12 +613,27 @@ def screen(
     *,
     top_n: object | None = None,
     tier: str = "auto",
+    engine: str | None = None,
 ) -> dict[str, object]:
-    return EljevClient().screen(criterion, candidates, top_n=top_n, tier=tier)
+    return EljevClient().screen(criterion, candidates, top_n=top_n, tier=tier, engine=engine)
 
 
-def decide(state: object, question: object) -> dict[str, object]:
-    return EljevClient().decide(state, question)
+def decide(
+    state: object,
+    question: object,
+    *,
+    engine: str | None = None,
+) -> dict[str, object]:
+    return EljevClient().decide(state, question, engine=engine)
+
+
+def gate(
+    state: object,
+    *,
+    session_id: str | None = None,
+    engine: str | None = None,
+) -> dict[str, object]:
+    return EljevClient().gate(state, session_id=session_id, engine=engine)
 
 
 def health() -> dict[str, object]:
@@ -470,6 +647,7 @@ __all__ = [
     "ResponseError",
     "TransportError",
     "decide",
+    "gate",
     "health",
     "screen",
 ]

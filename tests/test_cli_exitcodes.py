@@ -11,7 +11,7 @@ import unittest
 from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
-from eljev.cli import _pid_exists, main
+from eljev.cli import _pid_exists, main, main_mds
 
 
 ENV_KEYS_TO_CLEAR = (
@@ -42,6 +42,20 @@ def _run_cli(arguments, *, stdin_text=None):
     else:
         with patch("sys.stdin", stdin), redirect_stdout(output):
             code = main(arguments)
+    raw = output.getvalue()
+    decoded = json.loads(raw) if raw else None
+    return code, decoded
+
+
+def _run_cli_mds(arguments, *, stdin_text=None):
+    output = io.StringIO()
+    stdin = io.StringIO(stdin_text) if stdin_text is not None else None
+    if stdin is None:
+        with redirect_stdout(output):
+            code = main_mds(arguments)
+    else:
+        with patch("sys.stdin", stdin), redirect_stdout(output):
+            code = main_mds(arguments)
     raw = output.getvalue()
     decoded = json.loads(raw) if raw else None
     return code, decoded
@@ -343,6 +357,83 @@ class CLIExitCodeTests(unittest.TestCase):
         code, result = _run_cli(["version"])
         self.assertEqual(code, 0)
         self.assertEqual(result, {"version": "0.2.0"})
+
+    def test_main_mds_defaults_engine_to_md1_for_screen(self):
+        fake_client = MagicMock()
+        fake_client.screen.return_value = {
+            "schema": "eljev.decision/1",
+            "shape": "screen",
+            "status": "needs_review",
+            "exit_code": 2,
+        }
+        with patch("eljev.cli.EljevClient", return_value=fake_client):
+            code, result = _run_cli_mds(
+                ["screen", "--criterion", "pick one", "--text", "candidate text"]
+            )
+        self.assertEqual(code, 2)
+        self.assertEqual(result["shape"], "screen")
+        _args, kwargs = fake_client.screen.call_args
+        self.assertEqual(kwargs["engine"], "md1")
+
+    def test_configure_md1_engine_endpoint_deployment_and_extension_mode(self):
+        code, result = _run_cli(
+            [
+                "configure",
+                "--engine",
+                "md1",
+                "--md1-endpoint",
+                "https://example.services.ai.azure.com/providers/microsoft/v1/systemone",
+                "--md1-deployment",
+                "Decision-1",
+                "--extension-mode",
+                "enforce",
+            ]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(result["status"], "configured")
+        self.assertEqual(result["config"]["engine"], "md1")
+        self.assertEqual(result["config"]["md1_endpoint"], "https://example.services.ai.azure.com")
+        self.assertEqual(result["config"]["md1_deployment"], "Decision-1")
+        self.assertEqual(result["config"]["extension_mode"], "enforce")
+
+    def test_gate_state_text_passes_through(self):
+        fake_client = MagicMock()
+        fake_client.gate.return_value = {
+            "schema": "eljev.gate/1",
+            "status": "needs_review",
+            "exit_code": 2,
+            "tier": "deep_system2",
+            "enforceable": False,
+        }
+        with patch("eljev.cli.EljevClient", return_value=fake_client):
+            code, result = _run_cli(["gate", "--state-text", "Please review this change"])
+        self.assertEqual(code, 2)
+        self.assertEqual(result["schema"], "eljev.gate/1")
+        fake_client.gate.assert_called_once()
+        args, kwargs = fake_client.gate.call_args
+        self.assertEqual(args[0], "Please review this change")
+        self.assertEqual(kwargs["engine"], "md1")
+        self.assertEqual(kwargs["session_id"], None)
+
+    def test_install_and_uninstall_extension_repo_scope(self):
+        with tempfile.TemporaryDirectory() as repo:
+            install_code, install_result = _run_cli(
+                ["install-extension", "--scope", "repo", "--repo", repo]
+            )
+            self.assertEqual(install_code, 0)
+            target = Path(install_result["path"])
+            self.assertTrue(target.exists())
+            self.assertEqual(
+                target.resolve(),
+                (Path(repo) / ".github" / "extensions" / "el-mds" / "extension.mjs").resolve(),
+            )
+
+            uninstall_code, uninstall_result = _run_cli(
+                ["uninstall-extension", "--scope", "repo", "--repo", repo]
+            )
+            self.assertEqual(uninstall_code, 0)
+            self.assertEqual(uninstall_result["status"], "uninstalled")
+            self.assertFalse(target.exists())
 
 
 if __name__ == "__main__":

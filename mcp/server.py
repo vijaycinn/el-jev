@@ -271,7 +271,7 @@ def _require_nonempty_string(value: Any, label: str) -> str:
 
 def _validate_screen_arguments(arguments: Any) -> dict[str, Any]:
     args = _require_object(arguments, "arguments")
-    _reject_unknown_keys(args, {"criterion", "candidates", "top_n", "tier"}, "arguments")
+    _reject_unknown_keys(args, {"criterion", "candidates", "top_n", "tier", "engine"}, "arguments")
     criterion = _require_nonempty_string(args.get("criterion"), "criterion")
 
     candidates = args.get("candidates")
@@ -306,20 +306,28 @@ def _validate_screen_arguments(arguments: Any) -> dict[str, Any]:
     if isinstance(top_n, bool) or not isinstance(top_n, int) or not 1 <= top_n <= MAX_CANDIDATES:
         raise InputValidationError("top_n must be an integer from 1-250.")
     tier = args.get("tier", "auto")
-    if tier not in {"auto", "cohere", "local", "pregate_only"}:
-        raise InputValidationError("tier must be one of auto, cohere, local, pregate_only.")
+    if tier not in {"auto", "md1", "cohere", "local", "pregate_only"}:
+        raise InputValidationError("tier must be one of auto, md1, cohere, local, pregate_only.")
+    engine = args.get("engine")
+    if engine is not None:
+        engine = _require_nonempty_string(engine, "engine").lower()
+        if engine not in {"md1", "cohere"}:
+            raise InputValidationError("engine must be one of md1 or cohere.")
 
-    return {
+    result = {
         "criterion": criterion,
         "candidates": normalized,
         "top_n": top_n,
         "tier": tier,
     }
+    if engine is not None:
+        result["engine"] = engine
+    return result
 
 
 def _validate_decide_arguments(arguments: Any) -> dict[str, Any]:
     args = _require_object(arguments, "arguments")
-    _reject_unknown_keys(args, {"state", "question"}, "arguments")
+    _reject_unknown_keys(args, {"state", "question", "engine"}, "arguments")
     state = args.get("state")
     if isinstance(state, str):
         if not state.strip():
@@ -377,7 +385,13 @@ def _validate_decide_arguments(arguments: Any) -> dict[str, Any]:
         if criteria is not None and not isinstance(criteria, dict):
             raise InputValidationError("noul criteria must be an object when provided.")
 
-    return {
+    engine = args.get("engine")
+    if engine is not None:
+        engine = _require_nonempty_string(engine, "engine").lower()
+        if engine not in {"md1", "cohere"}:
+            raise InputValidationError("engine must be one of md1 or cohere.")
+
+    result = {
         "state": state,
         "question": {
             "id": question_id,
@@ -387,6 +401,9 @@ def _validate_decide_arguments(arguments: Any) -> dict[str, Any]:
             "criteria": normalized_criteria,
         },
     }
+    if engine is not None:
+        result["engine"] = engine
+    return result
 
 
 def _proxy_screen(arguments: Any) -> dict[str, Any]:
@@ -469,7 +486,8 @@ def _screen_schema() -> dict[str, Any]:
                 },
             },
             "top_n": {"type": "integer", "minimum": 1, "maximum": MAX_CANDIDATES},
-            "tier": {"type": "string", "enum": ["auto", "cohere", "local", "pregate_only"]},
+            "tier": {"type": "string", "enum": ["auto", "md1", "cohere", "local", "pregate_only"]},
+            "engine": {"type": "string", "enum": ["md1", "cohere"]},
         },
         "x-eljev-constraints": {
             "unique_candidate_ids": True,
@@ -500,6 +518,7 @@ def _decide_schema() -> dict[str, Any]:
                     {"type": "array"},
                 ]
             },
+            "engine": {"type": "string", "enum": ["md1", "cohere"]},
             "question": {
                 "type": "object",
                 "additionalProperties": False,

@@ -23,6 +23,12 @@ class ConfigTests(unittest.TestCase):
         "ELJEV_HOOK_MODE",
         "ELJEV_HOOK_TIMEOUT_MS",
         "ELJEV_CALIBRATION_PATH",
+        "ELJEV_ENGINE",
+        "ELJEV_MD1_ENDPOINT",
+        "ELJEV_MD1_DEPLOYMENT",
+        "ELJEV_MD1_TIMEOUT_MS",
+        "ELJEV_TIMEOUT_MS",
+        "ELJEV_EXTENSION_MODE",
     )
 
     def setUp(self):
@@ -174,6 +180,71 @@ class ConfigTests(unittest.TestCase):
         custom = Path(self._tempdir.name) / "calibration.json"
         os.environ["ELJEV_CALIBRATION_PATH"] = str(custom)
         self.assertEqual(config.calibration_path(), custom)
+
+    def test_normalize_md1_endpoint(self):
+        self.assertEqual(
+            config.normalize_md1_endpoint("https://example.services.ai.azure.com"),
+            "https://example.services.ai.azure.com",
+        )
+        self.assertEqual(
+            config.normalize_md1_endpoint(
+                "https://example.services.ai.azure.com/providers/microsoft/v1/systemone"
+            ),
+            "https://example.services.ai.azure.com",
+        )
+        with self.assertRaisesRegex(ValueError, "must end with"):
+            config.normalize_md1_endpoint("https://evil.example.com")
+        with self.assertRaisesRegex(ValueError, "unexpected md1 endpoint path"):
+            config.normalize_md1_endpoint("https://example.services.ai.azure.com/custom/path")
+
+    def test_engine_resolution(self):
+        self.assertEqual(config.engine(), "cohere")
+        config.save_config({"engine": "md1"})
+        self.assertEqual(config.engine(), "md1")
+        os.environ["ELJEV_ENGINE"] = "COHERE"
+        self.assertEqual(config.engine(), "cohere")
+        os.environ["ELJEV_ENGINE"] = "invalid"
+        self.assertEqual(config.engine(), "cohere")
+
+    def test_md1_endpoint_resolution(self):
+        self.assertEqual(config.md1_endpoint(), "")
+        config.save_config({"md1_endpoint": "https://config.services.ai.azure.com/"})
+        self.assertEqual(config.md1_endpoint(), "https://config.services.ai.azure.com")
+        config.save_config({"md1_endpoint": "https://evil.example.com"})
+        self.assertEqual(config.md1_endpoint(), "https://evil.example.com")
+        os.environ["ELJEV_MD1_ENDPOINT"] = " https://env.services.ai.azure.com/ "
+        self.assertEqual(config.md1_endpoint(), "https://env.services.ai.azure.com")
+        os.environ["ELJEV_MD1_ENDPOINT"] = ""
+        self.assertEqual(config.md1_endpoint(), "https://evil.example.com")
+
+    def test_md1_deployment(self):
+        self.assertEqual(config.md1_deployment(), "Decision-1")
+        config.save_config({"md1_deployment": "Decision-1-Config"})
+        self.assertEqual(config.md1_deployment(), "Decision-1-Config")
+        os.environ["ELJEV_MD1_DEPLOYMENT"] = "Decision-1-Env"
+        self.assertEqual(config.md1_deployment(), "Decision-1-Env")
+
+    def test_md1_timeout_ms(self):
+        self.assertEqual(config.md1_timeout_ms(), 2500)
+        config.save_config({"md1_timeout_ms": 1800})
+        self.assertEqual(config.md1_timeout_ms(), 1800)
+        config.save_config({"md1_timeout_ms": "2400"})
+        self.assertEqual(config.md1_timeout_ms(), 2400)
+        os.environ["ELJEV_TIMEOUT_MS"] = "3100"
+        self.assertEqual(config.md1_timeout_ms(), 3100)
+        os.environ["ELJEV_MD1_TIMEOUT_MS"] = "2900"
+        self.assertEqual(config.md1_timeout_ms(), 2900)
+        os.environ["ELJEV_MD1_TIMEOUT_MS"] = "invalid"
+        self.assertEqual(config.md1_timeout_ms(), 3100)
+
+    def test_extension_mode(self):
+        self.assertEqual(config.extension_mode(), "advisory")
+        config.save_config({"extension_mode": "enforce"})
+        self.assertEqual(config.extension_mode(), "enforce")
+        os.environ["ELJEV_EXTENSION_MODE"] = "ADVISORY"
+        self.assertEqual(config.extension_mode(), "advisory")
+        os.environ["ELJEV_EXTENSION_MODE"] = "unknown"
+        self.assertEqual(config.extension_mode(), "advisory")
 
 
 if __name__ == "__main__":
