@@ -361,6 +361,22 @@ def _format_probability_items(probabilities: dict[str, Any]) -> str | None:
     return ", ".join(f"{name}={score:.3f}" for name, score in top)
 
 
+def _intent_directive(selected: Any) -> str:
+    if not isinstance(selected, str) or not selected.strip():
+        return "Keep execution bounded to direct tools (view/grep/edit/powershell) before considering sub-agents."
+    directives = {
+        "review_audit": "Audit directly with targeted view/grep first; keep execution bounded to direct tools (view/grep/edit/powershell) before considering sub-agents.",
+        "investigation_search": "Search and inspect evidence first with direct tools (view/grep/edit/powershell); only escalate to sub-agents if direct evidence is insufficient.",
+        "code_modification": "Apply the minimal direct edit and verify it with local direct tools (view/grep/edit/powershell) before considering sub-agents.",
+        "execution_testing": "Run focused local verification commands with direct tools (view/grep/edit/powershell) before considering sub-agents.",
+        "advisory_explanation": "Ground the explanation in direct file evidence via view/grep before considering sub-agents.",
+    }
+    return directives.get(
+        selected.strip(),
+        "Keep execution bounded to direct tools (view/grep/edit/powershell) before considering sub-agents.",
+    )
+
+
 def _decision_block(decision: dict[str, Any]) -> str:
     kind = decision.get("kind")
     if not isinstance(kind, str):
@@ -404,6 +420,7 @@ def _decision_block(decision: dict[str, Any]) -> str:
         top = _format_probability_items(probabilities)
         if top is not None:
             lines.append(f"probabilities: {top}")
+    lines.append(f"directive: {_intent_directive(selected)}")
     lines.append("[/el-jev advisory]")
     return "\n".join(lines)
 

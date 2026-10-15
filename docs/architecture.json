@@ -2,22 +2,22 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "el-jev Architecture & Azure Foundry Integration",
+    "title": "el-jev v2: Microsoft-Decision-1 First Architecture",
     "output": "architecture.html",
     "quality_profile": "showcase"
   },
   "components": [
     {
-      "id": "user",
+      "id": "developer",
       "type": "external",
-      "label": "Developer",
-      "sublabel": "Copilot CLI Prompt",
+      "label": "Developer Prompt",
+      "sublabel": "CLI turn",
       "pos": [
         40,
-        260
+        250
       ],
       "size": [
-        130,
+        155,
         60
       ]
     },
@@ -25,267 +25,287 @@
       "id": "switch",
       "type": "security",
       "label": "EL_JEV Switch",
-      "sublabel": "Env: ON | OFF",
+      "sublabel": "ON | OFF",
       "pos": [
         40,
         110
       ],
       "size": [
-        130,
+        155,
         60
       ],
-      "tag": "Account Env"
+      "tag": "policy"
     },
     {
-      "id": "hook",
+      "id": "extension",
       "type": "backend",
-      "label": "GHCP Extension / Hook",
-      "sublabel": "onPrompt + onPreToolUse",
+      "label": "GHCP Extension",
+      "sublabel": "user prompt hook",
       "pos": [
-        240,
-        260
+        255,
+        250
       ],
       "size": [
-        150,
+        165,
         60
       ],
-      "tag": "750 ms, fail-open"
-    },
-    {
-      "id": "copilot_llm",
-      "type": "external",
-      "label": "Copilot LLM & Tools",
-      "sublabel": "Budget + Tool Gate",
-      "pos": [
-        240,
-        420
-      ],
-      "size": [
-        150,
-        60
-      ],
-      "tag": "Blocks task in fast_direct"
+      "tag": "el-mds"
     },
     {
       "id": "daemon",
       "type": "backend",
-      "label": "el-jev Daemon",
+      "label": "Local el-jev Daemon",
       "sublabel": "127.0.0.1:8787",
       "pos": [
-        460,
-        260
+        480,
+        250
       ],
       "size": [
-        140,
+        165,
         60
       ],
-      "tag": "Warm token + TLS"
+      "tag": "warm auth/TLS"
     },
     {
-      "id": "engine",
+      "id": "engine_router",
       "type": "backend",
-      "label": "Decision Core",
-      "sublabel": "--engine md1 | cohere",
+      "label": "Engine Router",
+      "sublabel": "--engine md1|cohere",
       "pos": [
-        670,
-        260
+        705,
+        250
       ],
       "size": [
-        150,
+        165,
         60
       ],
-      "tag": "Choice, Noul, Score, Gate"
+      "tag": "single API"
+    },
+    {
+      "id": "foundry_models",
+      "type": "cloud",
+      "label": "Foundry Models",
+      "sublabel": "MD1 + Cohere path",
+      "pos": [
+        930,
+        250
+      ],
+      "size": [
+        165,
+        60
+      ],
+      "tag": "Decision-1 first"
+    },
+    {
+      "id": "semantic_compiler",
+      "type": "backend",
+      "label": "Semantic Compiler",
+      "sublabel": "scores -> contract",
+      "pos": [
+        480,
+        410
+      ],
+      "size": [
+        165,
+        60
+      ],
+      "tag": "writes el-mds gate"
+    },
+    {
+      "id": "pre_tool_gate",
+      "type": "security",
+      "label": "onPreToolUse Gate",
+      "sublabel": "deny task on fast",
+      "pos": [
+        705,
+        410
+      ],
+      "size": [
+        165,
+        60
+      ],
+      "tag": "circuit breaker"
+    },
+    {
+      "id": "copilot_runtime",
+      "type": "external",
+      "label": "Copilot Runtime",
+      "sublabel": "direct tool path",
+      "pos": [
+        930,
+        410
+      ],
+      "size": [
+        165,
+        60
+      ],
+      "tag": "bounded path"
     },
     {
       "id": "entra",
       "type": "security",
       "label": "Microsoft Entra ID",
-      "sublabel": "scope: ai.azure.com",
+      "sublabel": "ai.azure.com scope",
       "pos": [
-        910,
+        705,
         110
       ],
       "size": [
-        160,
+        165,
         60
       ],
-      "tag": "Zero API Keys"
+      "tag": "keyless auth"
     },
     {
       "id": "rbac",
       "type": "security",
-      "label": "RBAC Role Gate",
-      "sublabel": "Cognitive Services User",
+      "label": "RBAC Role Check",
+      "sublabel": "Cognitive Svcs User",
       "pos": [
-        1140,
+        930,
         110
       ],
       "size": [
-        160,
+        165,
         60
       ],
-      "tag": "Managed Identity"
-    },
-    {
-      "id": "foundry",
-      "type": "cloud",
-      "label": "AI Services Gateway",
-      "sublabel": "services.ai.azure.com",
-      "pos": [
-        910,
-        260
-      ],
-      "size": [
-        160,
-        60
-      ]
-    },
-    {
-      "id": "cohere",
-      "type": "cloud",
-      "label": "Foundry Models",
-      "sublabel": "Decision-1 & Cohere Rerank",
-      "pos": [
-        1140,
-        260
-      ],
-      "size": [
-        160,
-        60
-      ],
-      "tag": "p50: 183-195ms"
+      "tag": "tenant policy"
     }
   ],
   "boundaries": [
     {
       "kind": "security-group",
-      "label": "Developer Workstation (Windows / macOS / Linux)",
+      "label": "Developer Workstation",
       "wraps": [
-        "user",
+        "developer",
         "switch",
-        "hook",
-        "copilot_llm",
+        "extension",
         "daemon",
-        "engine"
+        "engine_router",
+        "semantic_compiler",
+        "pre_tool_gate",
+        "copilot_runtime"
       ]
     },
     {
       "kind": "region",
-      "label": "Azure AI Foundry Cloud Environment",
+      "label": "Azure AI Foundry Cloud",
       "wraps": [
+        "foundry_models",
         "entra",
-        "rbac",
-        "foundry",
-        "cohere"
+        "rbac"
       ]
     }
   ],
   "connections": [
     {
-      "id": "prompt-in",
-      "from": "user",
-      "to": "hook",
+      "id": "c1",
+      "from": "developer",
+      "to": "extension",
       "label": "prompt",
       "variant": "emphasis"
     },
     {
-      "id": "check-switch",
+      "id": "c2",
       "from": "switch",
-      "to": "hook",
-      "label": "checks state",
+      "to": "extension",
+      "label": "enabled",
       "fromSide": "bottom",
       "toSide": "top"
     },
     {
-      "id": "hook-to-daemon",
-      "from": "hook",
+      "id": "c3",
+      "from": "extension",
       "to": "daemon",
-      "label": "HTTP :8787"
+      "label": "/v1/gate",
+      "labelDy": 54
     },
     {
-      "id": "daemon-to-engine",
+      "id": "c4",
       "from": "daemon",
-      "to": "engine",
-      "label": "route"
+      "to": "engine_router",
+      "label": "decision req",
+      "labelDy": 54
     },
     {
-      "id": "get-token",
-      "from": "engine",
+      "id": "c5",
+      "from": "engine_router",
+      "to": "foundry_models",
+      "label": "md1 first, cohere",
+      "variant": "emphasis",
+      "labelDy": 54
+    },
+    {
+      "id": "c6",
+      "from": "engine_router",
       "to": "entra",
-      "label": "mint token",
+      "label": "token mint",
       "fromSide": "top",
       "toSide": "bottom",
       "variant": "security"
     },
     {
-      "id": "entra-to-rbac",
+      "id": "c7",
       "from": "entra",
       "to": "rbac",
-      "label": "verifies role",
-      "fromSide": "right",
-      "toSide": "left",
-      "variant": "security"
+      "label": "role check",
+      "variant": "security",
+      "labelDy": 32
     },
     {
-      "id": "engine-to-foundry",
-      "from": "engine",
-      "to": "foundry",
-      "label": "HTTPS TLS",
-      "variant": "emphasis"
+      "id": "c8",
+      "from": "daemon",
+      "to": "semantic_compiler",
+      "label": "intent+noul+tier",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [
+        613,
+        324
+      ]
     },
     {
-      "id": "foundry-to-cohere",
-      "from": "foundry",
-      "to": "cohere",
-      "label": "systemone / rerank",
+      "id": "c9",
+      "from": "semantic_compiler",
+      "to": "pre_tool_gate",
+      "label": "inject contract",
       "labelDy": 54
     },
     {
-      "id": "inject-context",
-      "from": "hook",
-      "to": "copilot_llm",
-      "label": "advisory block",
-      "fromSide": "bottom",
-      "toSide": "top",
+      "id": "c11",
+      "from": "pre_tool_gate",
+      "to": "copilot_runtime",
+      "label": "direct tools only",
       "variant": "emphasis",
-      "labelDy": 24
-    },
-    {
-      "id": "ready-action",
-      "from": "copilot_llm",
-      "to": "user",
-      "label": "act or reason",
-      "fromSide": "left",
-      "toSide": "bottom",
-      "variant": "dashed"
+      "labelDy": 54
     }
   ],
   "cards": [
     {
       "dot": "cyan",
-      "title": "Local Speed Path",
+      "title": "Microsoft-Decision-1 First",
       "items": [
-        "Hook has a 500 ms budget and fails open on any error",
-        "Daemon pre-mints the Entra token and keeps TLS warm",
-        "Daemon down: hook spawns it once and lets the turn proceed"
+        "Primary inference path is Decision-1.",
+        "Pivot via --engine md1|cohere.",
+        "Resident daemon keeps auth/TLS warm."
       ]
     },
     {
       "dot": "emerald",
-      "title": "Typed Decisioning",
+      "title": "Semantic Compiler",
       "items": [
-        "Microsoft-Decision-1 (Decision-1) + Cohere-rerank-v4.0-pro drive selection signals",
-        "Three-head /v1/gate checks intent + needs_deep_analysis + execution_tier",
-        "onPreToolUse circuit-breaks unnecessary task sub-agents before launch"
+        "Compiles 3-head scores to imperative rules.",
+        "Injects el-mds gate into system context.",
+        "Makes numeric verdicts action-ready."
       ]
     },
     {
       "dot": "rose",
-      "title": "Enterprise Security & RBAC",
+      "title": "Deterministic onPreToolUse Gate",
       "items": [
-        "Keyless Entra ID via az CLI or Managed Identity",
-        "Requires Cognitive Services User on the Foundry resource",
-        "Loopback only; rejects browser Origin and foreign Host"
+        "Denies task/workflow on fast_direct turns.",
+        "Keeps direct local tools available.",
+        "Fails open when gate data is missing."
       ]
     }
   ]

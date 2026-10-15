@@ -1280,27 +1280,42 @@ def _budget_text(
     tier: str,
     enforceable: bool,
     status: str,
+    *,
     intent: str | None = None,
     needs_deep_analysis: float | None = None,
 ) -> str:
     if status not in {"selected", "needs_review"}:
-        directive = "Gate unavailable; proceed with normal caution."
-    elif tier == "fast_direct":
-        directive = "Use direct local actions only (1-3 direct tool calls, no sub-agents)."
-    elif tier == "bounded_work":
-        directive = "Keep execution bounded to a single track in <=5 direct tool calls."
-    else:
-        directive = "Deep analysis and multi-step execution are acceptable."
-    mode = "enforce" if enforceable else "advisory"
-    intent_text = intent if isinstance(intent, str) and intent.strip() else "unknown"
-    deep_text = (
+        return ""
+    intent_text = intent if isinstance(intent, str) and intent.strip() else "unclassified"
+    noul_text = (
         f"{float(needs_deep_analysis):.3f}"
-        if isinstance(needs_deep_analysis, (int, float)) and not isinstance(needs_deep_analysis, bool)
-        else "unknown"
+        if isinstance(needs_deep_analysis, (int, float))
+        and not isinstance(needs_deep_analysis, bool)
+        and math.isfinite(float(needs_deep_analysis))
+        else "n/a"
     )
-    return (
-        "[el-mds gate]\n"
-        f"tier: {tier} | intent: {intent_text} | needs_deep_analysis: {deep_text} | mode: {mode} ({status})\n"
-        f"directive: {directive}\n"
-        "[/el-mds gate]"
+    mode_text = "enforce" if enforceable else "advisory"
+    if tier == "fast_direct":
+        directive = (
+            f"EXECUTION CONTRACT (bounded {intent_text} task): Execute directly without extended deliberation. "
+            "Do NOT write an upfront multi-step plan. Do NOT spawn sub-agents (do not call task or run_dynamic_workflow). "
+            "Complete using at most 3 direct tool calls (view, grep, edit, powershell) and reply in 3 sentences or fewer."
+        )
+    elif tier == "bounded_work":
+        directive = (
+            f"EXECUTION CONTRACT (single-track {intent_text} task): Execute in a single track using at most 5 direct tool calls "
+            "without spawning sub-agents. State assumptions briefly and verify directly."
+        )
+    else:
+        directive = (
+            f"EXECUTION CONTRACT (complex {intent_text} task): Multi-step analysis, trade-off evaluation, "
+            "or specialist sub-agent delegation is permitted."
+        )
+    return "\n".join(
+        [
+            "[el-mds gate]",
+            f"tier: {tier} | intent: {intent_text} | needs_deep_analysis: {noul_text} | mode: {mode_text} ({status})",
+            f"directive: {directive}",
+            "[/el-mds gate]",
+        ]
     )

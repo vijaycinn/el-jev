@@ -2,209 +2,232 @@
   "schema_version": 2,
   "diagram_type": "workflow",
   "meta": {
-    "title": "el-jev Decisioning & Dual-Gate Inner Wiring",
+    "title": "el-jev v2 Decisioning Flow",
     "output": "decisioning-flow.html",
     "quality_profile": "showcase"
   },
   "lanes": [
     {
-      "id": "prompt_intake",
-      "label": "Prompt Intake & Shaping"
+      "id": "prompt_lane",
+      "label": "Prompt Intake"
     },
     {
-      "id": "decision_engine",
-      "label": "el-jev Engine & Azure Foundry"
+      "id": "decision_lane",
+      "label": "System-1 + Compiler"
     },
     {
-      "id": "dual_gate_lane",
-      "label": "Dual Gate & Safety Evaluation",
+      "id": "gate_lane",
+      "label": "onPreToolUse Gate",
       "variant": "exception"
     },
     {
-      "id": "execution",
-      "label": "Copilot Execution Outcome"
+      "id": "outcome_lane",
+      "label": "Execution Outcome"
     }
   ],
   "phases": [
     {
-      "id": "shaping_phase",
-      "label": "1. Shape Mapping",
+      "id": "phase_1",
+      "label": "1) Compound verdict",
       "fromCol": 0,
-      "toCol": 1
-    },
-    {
-      "id": "scoring_phase",
-      "label": "2. Scoring & Softmax",
-      "fromCol": 2,
-      "toCol": 3,
+      "toCol": 1,
       "variant": "emphasis"
     },
     {
-      "id": "gating_phase",
-      "label": "3. Dual Gate & Execution",
+      "id": "phase_2",
+      "label": "2) Semantic compile",
       "fromCol": 4,
+      "toCol": 4
+    },
+    {
+      "id": "phase_3",
+      "label": "3) Tool control",
+      "fromCol": 5,
       "toCol": 5,
       "variant": "dashed"
     }
   ],
   "mainPath": [
     "prompt",
-    "shaper",
-    "cohere",
-    "softmax",
-    "gate",
-    "act_fast"
+    "gate_call",
+    "md1_eval",
+    "heads",
+    "compiler",
+    "injection",
+    "pre_tool_gate",
+    "bounded_completion"
   ],
   "nodes": [
     {
       "id": "prompt",
-      "lane": "prompt_intake",
+      "lane": "prompt_lane",
       "col": 0,
       "type": "external",
-      "label": "User Prompt",
-      "sublabel": "marker or intent",
-      "width": 140
+      "label": "Prompt",
+      "sublabel": "turn",
+      "width": 120
     },
     {
-      "id": "shaper",
-      "lane": "prompt_intake",
+      "id": "gate_call",
+      "lane": "prompt_lane",
       "col": 1,
       "type": "backend",
-      "label": "Engine & Shape",
-      "sublabel": "md1 (batch) or cohere",
-      "tag": "caps validated",
-      "width": 140
+      "label": "Call /v1/gate",
+      "sublabel": "onUserPrompt",
+      "tag": "extension",
+      "width": 130
     },
     {
-      "id": "cohere",
-      "lane": "decision_engine",
+      "id": "md1_eval",
+      "lane": "decision_lane",
       "col": 2,
       "type": "cloud",
-      "label": "Foundry Inference",
-      "sublabel": "Decision-1 or Rerank v4",
-      "tag": "p50: 183-195ms",
-      "width": 140
+      "label": "Microsoft-Decision-1",
+      "sublabel": "Decision-1 primary",
+      "tag": "single pass",
+      "width": 130
     },
     {
-      "id": "softmax",
-      "lane": "decision_engine",
+      "id": "cohere_optional",
+      "lane": "decision_lane",
+      "col": 1,
+      "type": "cloud",
+      "label": "Cohere Rerank",
+      "sublabel": "cohere fallback",
+      "tag": "engine pivot",
+      "width": 120
+    },
+    {
+      "id": "heads",
+      "lane": "decision_lane",
       "col": 3,
       "type": "backend",
-      "label": "Probability Norm",
-      "sublabel": "native md1 or T-softmax",
-      "tag": "sum(P) = 1.0",
-      "width": 140
+      "label": "3-Head Verdict",
+      "sublabel": "intent+noul+tier",
+      "tag": "eljev.gate/1",
+      "width": 130
     },
     {
-      "id": "fail_open",
-      "lane": "dual_gate_lane",
-      "col": 3,
-      "type": "security",
-      "label": "Engine Error",
-      "sublabel": "no heuristic guess",
-      "tag": "fail-open",
-      "width": 140
-    },
-    {
-      "id": "gate",
-      "lane": "dual_gate_lane",
+      "id": "compiler",
+      "lane": "decision_lane",
       "col": 4,
-      "type": "security",
-      "label": "Dual Gate Check",
-      "sublabel": "P(top)>=τ and Δ>=margin",
-      "tag": "calibrated only",
-      "width": 140
+      "type": "backend",
+      "label": "Semantic Compiler",
+      "sublabel": "scores->RLHF",
+      "tag": "bridge",
+      "width": 130
     },
     {
-      "id": "act_fast",
-      "lane": "execution",
+      "id": "injection",
+      "lane": "decision_lane",
       "col": 5,
       "type": "backend",
-      "label": "Exit 0: Selected",
-      "sublabel": "enforce fast_direct gate",
-      "tag": "calibrated only",
+      "label": "Inject el-mds gate",
+      "sublabel": "system reminder",
+      "tag": "exec contract",
+      "width": 130
+    },
+    {
+      "id": "pre_tool_gate",
+      "lane": "gate_lane",
+      "col": 5,
+      "type": "security",
+      "label": "onPreToolUse Gate",
+      "sublabel": "deny task on fast",
+      "tag": "permission deny",
       "width": 140
     },
     {
-      "id": "escalate",
-      "lane": "dual_gate_lane",
+      "id": "bounded_completion",
+      "lane": "outcome_lane",
       "col": 5,
+      "type": "backend",
+      "label": "Bounded Completion",
+      "sublabel": "view/grep/edit",
+      "tag": "fast_direct",
+      "width": 130
+    },
+    {
+      "id": "deep_allowed",
+      "lane": "outcome_lane",
+      "col": 4,
       "type": "external",
-      "label": "Exit 2: Needs Review",
-      "sublabel": "proceed to LLM reasoning",
-      "tag": "default policy",
-      "width": 140
+      "label": "Deep System-2",
+      "sublabel": "bounded/deep",
+      "tag": "no deny",
+      "width": 110
     }
   ],
   "edges": [
     {
-      "id": "e_prompt_shaper",
+      "id": "e1",
       "from": "prompt",
-      "to": "shaper",
+      "to": "gate_call",
       "variant": "default"
     },
     {
-      "id": "e_shaper_cohere",
-      "from": "shaper",
-      "to": "cohere",
-      "label": "query + candidates",
+      "id": "e2",
+      "from": "gate_call",
+      "to": "md1_eval",
+      "label": "default engine",
       "variant": "emphasis"
     },
     {
-      "id": "e_cohere_softmax",
-      "from": "cohere",
-      "to": "softmax",
-      "label": "relevance scores",
+      "id": "e3",
+      "from": "gate_call",
+      "to": "cohere_optional",
+      "label": "--engine cohere",
+      "variant": "dashed"
+    },
+    {
+      "id": "e4",
+      "from": "md1_eval",
+      "to": "heads",
+      "label": "intent+noul+tier",
       "variant": "default"
     },
     {
-      "id": "e_cohere_fail",
-      "from": "cohere",
-      "to": "fail_open",
-      "label": "timeout / 401 / 429",
-      "variant": "security",
-      "role": "error"
+      "id": "e5",
+      "from": "cohere_optional",
+      "to": "heads",
+      "label": "cohere verdict",
+      "variant": "dashed"
     },
     {
-      "id": "e_softmax_gate",
-      "from": "softmax",
-      "to": "gate",
-      "label": "P(top) and margin",
+      "id": "e6",
+      "from": "heads",
+      "to": "compiler",
+      "label": "numeric verdict",
       "variant": "default"
     },
     {
-      "id": "e_gate_pass",
-      "from": "gate",
-      "to": "act_fast",
-      "label": "pass dual gate",
+      "id": "e7",
+      "from": "compiler",
+      "to": "injection",
+      "label": "RLHF contract",
       "variant": "emphasis"
     },
     {
-      "id": "e_gate_fail",
-      "from": "gate",
-      "to": "escalate",
-      "label": "abstain / margin / tie",
+      "id": "e8",
+      "from": "injection",
+      "to": "pre_tool_gate",
+      "label": "tool context",
       "variant": "security"
+    },
+    {
+      "id": "e9",
+      "from": "pre_tool_gate",
+      "to": "bounded_completion",
+      "label": "direct tools",
+      "variant": "emphasis"
+    },
+    {
+      "id": "e10",
+      "from": "pre_tool_gate",
+      "to": "deep_allowed",
+      "label": "non-fast_direct",
+      "variant": "dashed"
     }
   ],
-  "cards": [
-    {
-      "dot": "cyan",
-      "title": "Statement to Decision Mapping",
-      "items": [
-        "el-mds /v1/gate uses a 3-head compound gate: intent + needs_deep_analysis + execution_tier",
-        "md1 batch mode or cohere rerank path emits typed decision signals",
-        "No generic yes/no gate is invented from a bare prompt"
-      ]
-    },
-    {
-      "dot": "rose",
-      "title": "One Dual Gate for Every Shape",
-      "items": [
-        "Default always_abstain_v0: every verdict is advisory (exit 2)",
-        "calibrated: exit 0 only if P(top)>=threshold and margin>=margin_threshold",
-        "Engine-scoped calibration comes from engines.md1.kinds.<kind>"
-      ]
-    }
-  ]
+  "cards": []
 }
