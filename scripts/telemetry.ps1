@@ -138,7 +138,7 @@ function Show-AzureMetrics {
 
     $start = (Get-Date).ToUniversalTime().AddHours(-24).ToString("o")
     $end = (Get-Date).ToUniversalTime().ToString("o")
-    $metrics = @("TotalCalls", "SuccessCalls", "Latency", "ProcessedPromptTokens", "GeneratedTokens")
+    $metrics = @("TotalCalls", "SuccessfulCalls", "ModelRequests", "Latency", "TimeToResponse", "InputTokens", "OutputTokens", "FoundryModelEstimatedCost")
     $metricCsv = [string]::Join(",", $metrics)
 
     foreach ($resourceName in $resourceNames) {
