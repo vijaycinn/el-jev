@@ -22,6 +22,7 @@ from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from .. import config
+from .auth import AUTH_FAIL_COOLDOWN_S, FoundryAuthError, run_azcli_subprocess
 
 
 COHERE_PATH = "/providers/cohere/v2/rerank"
@@ -30,6 +31,7 @@ DEFAULT_TIMEOUT_MS = 2500
 TOKEN_SCOPE = "https://ai.azure.com/.default"
 TOKEN_REFRESH_SKEW_S = 300.0
 FALLBACK_TOKEN_TTL_S = 55 * 60.0
+_AUTH_FAIL_COOLDOWN_S = AUTH_FAIL_COOLDOWN_S
 MAX_HTTP_ATTEMPTS = 4
 STALE_REUSE_ERRORS = (
     http.client.RemoteDisconnected,
@@ -87,6 +89,7 @@ class CohereClient:
         deployment: str | None = None,
         timeout_ms: int | None = None,
         token_timeout_s: float = 15.0,
+        failure_cooldown_s: float = AUTH_FAIL_COOLDOWN_S,
         connection_factory: Callable[..., Any] | None = None,
         token_provider: Callable[[], str] | None = None,
     ) -> None:
@@ -96,6 +99,7 @@ class CohereClient:
             timeout_ms if timeout_ms is not None else os.environ.get("ELJEV_TIMEOUT_MS", DEFAULT_TIMEOUT_MS)
         )
         self.token_timeout_s = float(token_timeout_s)
+        self.failure_cooldown_s = max(0.0, float(failure_cooldown_s))
         self._connection_factory = connection_factory or http.client.HTTPSConnection
         self._token_provider = token_provider
         self._connection: Any | None = None
@@ -103,6 +107,8 @@ class CohereClient:
         self._token_lock = threading.Lock()
         self._token: str | None = None
         self._token_expiry_epoch = 0.0
+        self._failure_until_epoch = 0.0
+        self._last_auth_error: CohereError | None = None
 
     @staticmethod
     def parse_response(payload: Any) -> dict[str, Any]:
@@ -189,13 +195,10 @@ class CohereClient:
             # az default account cannot produce "Token tenant ... does not match resource tenant".
             command[3:3] = ["--subscription", subscription]
         try:
-            completed = subprocess.run(
+            completed = run_azcli_subprocess(
                 command,
-                shell=False,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=self.token_timeout_s,
+                timeout_s=self.token_timeout_s,
+                run_fn=subprocess.run,
             )
         except subprocess.TimeoutExpired as exc:
             raise CohereError("timeout", "Azure token minting timed out") from exc
@@ -258,7 +261,10 @@ class CohereClient:
 
     def _mint_token(self) -> tuple[str, float]:
         if self._token_provider is not None:
-            token = self._token_provider()
+            try:
+                token = self._token_provider()
+            except FoundryAuthError as exc:
+                raise CohereError(exc.error_kind, str(exc)) from exc
             if not isinstance(token, str) or not token.strip():
                 raise CohereError("auth", "Azure token provider returned an empty token")
             return token.strip(), time.time() + FALLBACK_TOKEN_TTL_S
@@ -277,10 +283,20 @@ class CohereClient:
             and self._token_expiry_epoch > (now_epoch + TOKEN_REFRESH_SKEW_S)
         )
 
+    def _raise_cooldown_error(self) -> None:
+        err = self._last_auth_error
+        if err is not None:
+            raise CohereError(err.error_kind, str(err))
+        raise CohereError("auth", "Azure token minting is in failure cooldown")
+
     def _get_token(self) -> str:
         now_epoch = time.time()
         if self._token_valid(now_epoch):
             return str(self._token)
+        if now_epoch < self._failure_until_epoch:
+            if isinstance(self._token, str) and self._token and self._token_expiry_epoch > now_epoch:
+                return self._token
+            self._raise_cooldown_error()
         if not self._token_lock.acquire(blocking=False):
             # Another thread is refreshing; serve the still-unexpired token instead of
             # blocking a request behind `az` (up to token_timeout_s).
@@ -291,9 +307,22 @@ class CohereClient:
             now_epoch = time.time()
             if self._token_valid(now_epoch):
                 return str(self._token)
-            token, expiry_epoch = self._mint_token()
+            if now_epoch < self._failure_until_epoch:
+                if isinstance(self._token, str) and self._token and self._token_expiry_epoch > now_epoch:
+                    return self._token
+                self._raise_cooldown_error()
+            try:
+                token, expiry_epoch = self._mint_token()
+            except CohereError as exc:
+                self._last_auth_error = exc
+                self._failure_until_epoch = now_epoch + self.failure_cooldown_s
+                if isinstance(self._token, str) and self._token and self._token_expiry_epoch > now_epoch:
+                    return self._token
+                raise
             self._token = token
             self._token_expiry_epoch = float(expiry_epoch)
+            self._failure_until_epoch = 0.0
+            self._last_auth_error = None
             return token
         finally:
             self._token_lock.release()

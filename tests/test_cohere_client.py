@@ -327,6 +327,40 @@ class CohereClientTests(unittest.TestCase):
         self.assertTrue(client.warm())
         self.assertEqual(connection.connect_calls, 1)
 
+    def test_cohere_az_failure_and_timeout_trip_negative_cache_cooldown(self):
+        timeout_exc = subprocess.TimeoutExpired(cmd=["az"], timeout=15.0)
+        succeeded = subprocess.CompletedProcess(
+            args=["az"],
+            returncode=0,
+            stdout=json.dumps({"accessToken": "tok-recovered", "expires_on": 2000}),
+            stderr="",
+        )
+        client = CohereClient(
+            endpoint="https://example.services.ai.azure.com",
+            failure_cooldown_s=300.0,
+        )
+        clock = {"now": 100.0}
+        with patch("eljev.engines.cohere.subprocess.run", side_effect=[timeout_exc, succeeded]) as run_mock, patch(
+            "eljev.engines.cohere.shutil.which", return_value="az"
+        ), patch("eljev.engines.cohere.time.time", side_effect=lambda: clock["now"]):
+            with self.assertRaises(CohereError) as first_err:
+                client._get_token()
+            self.assertEqual(first_err.exception.error_kind, "timeout")
+            self.assertEqual(run_mock.call_count, 1)
+
+            # Within the 300s cooldown window, _get_token() and warm() fail open without spawning az.
+            clock["now"] = 200.0
+            with self.assertRaises(CohereError) as second_err:
+                client._get_token()
+            self.assertEqual(second_err.exception.error_kind, "timeout")
+            self.assertFalse(client.warm())
+            self.assertEqual(run_mock.call_count, 1)
+
+            # After the 300s cooldown expires, _get_token() retries az and recovers.
+            clock["now"] = 405.0
+            self.assertEqual(client._get_token(), "tok-recovered")
+            self.assertEqual(run_mock.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

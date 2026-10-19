@@ -1,12 +1,19 @@
 import http.client
 import json
 import os
+import subprocess
+import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
 
-from eljev.engines.auth import FoundryAuthError, FoundryBearerProvider
+from eljev.engines.auth import (
+    FoundryAuthError,
+    FoundryBearerProvider,
+    _find_spawned_azcli_pids,
+)
 from eljev.engines.md1 import MD1_PATH, MD1Client, MD1Error
 
 
@@ -295,6 +302,131 @@ class MD1ClientTests(unittest.TestCase):
 
         self.assertEqual(token, "cached-token")
         self.assertLess(elapsed, 0.2)
+
+    def test_bearer_provider_negative_cache_cooldown_blocks_repeated_az_spawns(self):
+        failed = subprocess.CompletedProcess(args=["az"], returncode=1, stdout="", stderr="interaction_required")
+        succeeded = subprocess.CompletedProcess(
+            args=["az"],
+            returncode=0,
+            stdout=json.dumps({"accessToken": "recovered-token", "expires_on": 2000}),
+            stderr="",
+        )
+        provider = FoundryBearerProvider(failure_cooldown_s=300.0)
+        clock = {"now": 100.0}
+        with patch("eljev.engines.auth.subprocess.run", side_effect=[failed, succeeded]) as run_mock, patch(
+            "eljev.engines.auth.shutil.which", return_value="az"
+        ), patch("eljev.engines.auth.time.time", side_effect=lambda: clock["now"]):
+            with self.assertRaises(FoundryAuthError) as first_err:
+                provider.get_token()
+            self.assertEqual(first_err.exception.error_kind, "auth")
+            self.assertEqual(run_mock.call_count, 1)
+
+            # Subsequent calls within the 300s cooldown window must NOT spawn az again.
+            clock["now"] = 250.0
+            with self.assertRaises(FoundryAuthError) as cooldown_err:
+                provider.get_token()
+            self.assertEqual(cooldown_err.exception.error_kind, "auth")
+            self.assertFalse(provider.warm())
+            self.assertEqual(run_mock.call_count, 1)
+
+            # Once cooldown expires (t >= 400.0), az is retried and succeeds.
+            clock["now"] = 401.0
+            token = provider.get_token()
+            self.assertEqual(token, "recovered-token")
+            self.assertEqual(run_mock.call_count, 2)
+
+    def test_bearer_provider_timeout_trips_cooldown_and_cleans_up_children(self):
+        timeout_exc = subprocess.TimeoutExpired(cmd=["az"], timeout=15.0)
+        provider = FoundryBearerProvider(token_timeout_s=15.0, failure_cooldown_s=300.0)
+        clock = {"now": 500.0}
+        with patch("eljev.engines.auth.subprocess.run", side_effect=timeout_exc) as run_mock, patch(
+            "eljev.engines.auth.shutil.which", return_value="az"
+        ), patch("eljev.engines.auth.time.time", side_effect=lambda: clock["now"]), patch(
+            "eljev.engines.auth._terminate_spawned_azcli_tree", return_value=[]
+        ) as cleanup_mock:
+            with self.assertRaises(FoundryAuthError) as first_err:
+                provider.get_token()
+            self.assertEqual(first_err.exception.error_kind, "timeout")
+            self.assertEqual(run_mock.call_count, 1)
+            if sys.platform == "win32":
+                self.assertEqual(cleanup_mock.call_count, 1)
+
+            clock["now"] = 600.0
+            with self.assertRaises(FoundryAuthError) as second_err:
+                provider.get_token()
+            self.assertEqual(second_err.exception.error_kind, "timeout")
+            self.assertEqual(run_mock.call_count, 1)
+
+    def test_bearer_provider_single_flight_lock_prevents_concurrent_failure_stampede(self):
+        entered = threading.Event()
+        release = threading.Event()
+        calls: list[int] = []
+
+        def slow_failing_run(*args, **kwargs):  # noqa: ANN002, ANN003
+            calls.append(1)
+            entered.set()
+            release.wait(5.0)
+            return subprocess.CompletedProcess(args=["az"], returncode=1, stdout="", stderr="failed")
+
+        provider = FoundryBearerProvider(failure_cooldown_s=300.0)
+        errors: list[FoundryAuthError] = []
+
+        def worker() -> None:
+            try:
+                provider.get_token()
+            except FoundryAuthError as exc:
+                errors.append(exc)
+
+        with patch("eljev.engines.auth.subprocess.run", side_effect=slow_failing_run), patch(
+            "eljev.engines.auth.shutil.which", return_value="az"
+        ):
+            t1 = threading.Thread(target=worker, daemon=True)
+            t2 = threading.Thread(target=worker, daemon=True)
+            t1.start()
+            self.assertTrue(entered.wait(2.0))
+            t2.start()
+            time.sleep(0.05)
+            release.set()
+            t1.join(2.0)
+            t2.join(2.0)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(errors), 2)
+
+    def test_azcli_subprocess_passes_noninteractive_env_and_find_spawned_pids_identifies_orphans(self):
+        completed = subprocess.CompletedProcess(
+            args=["az"],
+            returncode=0,
+            stdout=json.dumps({"accessToken": "tok-env", "expires_on": 9_999_999_999}),
+            stderr="",
+        )
+        provider = FoundryBearerProvider()
+        with patch("eljev.engines.auth.subprocess.run", return_value=completed) as run_mock, patch(
+            "eljev.engines.auth.shutil.which", return_value="az"
+        ):
+            provider.get_token()
+
+        kwargs = run_mock.call_args.kwargs
+        self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(kwargs["env"]["AZURE_CORE_DISABLE_CONFIRM_PROMPT"], "true")
+        self.assertEqual(kwargs["env"]["AZURE_CORE_ONLY_SHOW_ERRORS"], "true")
+        self.assertEqual(kwargs["env"]["AZURE_CORE_NO_COLOR"], "true")
+        self.assertEqual(kwargs["env"]["GCM_INTERACTIVE"], "never")
+        if sys.platform == "win32":
+            self.assertTrue(kwargs["creationflags"] & getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+        # Verify orphan detection: owner=100, pre-existing={50, 100}.
+        # cmd.exe (200) already died; orphaned grandchild python.exe (201, ppid=200) is detected,
+        # while unrelated python.exe (301, ppid=50) and browser msedge.exe (202, ppid=200) are ignored.
+        before = {50, 100}
+        after = {
+            50: (4, "explorer.exe"),
+            100: (50, "python.exe"),
+            201: (200, "python.exe"),
+            202: (200, "msedge.exe"),
+            301: (50, "python.exe"),
+        }
+        self.assertEqual(_find_spawned_azcli_pids(before, after, owner_pid=100), [201])
 
 
 if __name__ == "__main__":

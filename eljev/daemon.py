@@ -18,6 +18,7 @@ from typing import Any
 
 from . import config
 from .decisionlog import DecisionLog
+from .engines.auth import FoundryBearerProvider
 from .engines.cohere import CohereClient, CohereError
 from .engines.md1 import INTENT_CRITERIA, MD1Client, MD1Engine, _budget_text
 from .engines.systemone import SystemOneEngine, SystemOneError, _serialize_state
@@ -107,8 +108,9 @@ class EljevHTTPServer(ThreadingHTTPServer):
         super().__init__(server_address, handler_class)
         self.started_at = time.monotonic()
         self.engine_gate = threading.BoundedSemaphore(1)
-        self.cohere = CohereClient()
-        self.md1_client = MD1Client()
+        self.bearer_provider = FoundryBearerProvider()
+        self.cohere = CohereClient(token_provider=self.bearer_provider.get_token)
+        self.md1_client = MD1Client(token_provider=self.bearer_provider.get_token)
         self.md1 = MD1Engine(client=self.md1_client)
         self.systemone = SystemOneEngine(cohere=self.cohere)
         self.decision_log = DecisionLog()
@@ -698,16 +700,34 @@ def create_server(
 
 def _run_warm_loop(server: EljevHTTPServer) -> None:
     while not server._warm_stop.is_set():
+        enabled, _ = config.enabled_state()
+        if not enabled:
+            server.last_warm_ok = False
+            server._warm_stop.wait(WARM_INTERVAL_S)
+            continue
+        active_engine = config.engine()
         cohere_ok = False
         md1_ok = False
-        try:
-            cohere_ok = bool(server.cohere.warm())
-        except Exception:
-            cohere_ok = False
-        try:
-            md1_ok = bool(server.md1_client.warm())
-        except Exception:
-            md1_ok = False
+        if active_engine == "md1":
+            try:
+                md1_ok = bool(server.md1_client.warm())
+            except Exception:
+                md1_ok = False
+            if not md1_ok and getattr(server.cohere, "endpoint", ""):
+                try:
+                    cohere_ok = bool(server.cohere.warm())
+                except Exception:
+                    cohere_ok = False
+        else:
+            try:
+                cohere_ok = bool(server.cohere.warm())
+            except Exception:
+                cohere_ok = False
+            if not cohere_ok and getattr(server.md1_client, "endpoint", ""):
+                try:
+                    md1_ok = bool(server.md1_client.warm())
+                except Exception:
+                    md1_ok = False
         server.last_warm_ok = bool(cohere_ok or md1_ok)
         server._warm_stop.wait(WARM_INTERVAL_S)
 
