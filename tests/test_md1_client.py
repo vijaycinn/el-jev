@@ -401,13 +401,18 @@ class MD1ClientTests(unittest.TestCase):
             stderr="",
         )
         provider = FoundryBearerProvider()
-        with patch("eljev.engines.auth.subprocess.run", return_value=completed) as run_mock, patch(
+        with patch.dict(
+            os.environ,
+            {"COPILOT_AGENT_SESSION_ID": "00-9df2993dee600ed4106d7484daa00530-c85d75e552b1244c-00"},
+            clear=False,
+        ), patch("eljev.engines.auth.subprocess.run", return_value=completed) as run_mock, patch(
             "eljev.engines.auth.shutil.which", return_value="az"
         ):
             provider.get_token()
 
         kwargs = run_mock.call_args.kwargs
         self.assertEqual(kwargs["stdin"], subprocess.DEVNULL)
+        self.assertNotIn("COPILOT_AGENT_SESSION_ID", kwargs["env"])
         self.assertEqual(kwargs["env"]["AZURE_CORE_DISABLE_CONFIRM_PROMPT"], "true")
         self.assertEqual(kwargs["env"]["AZURE_CORE_ONLY_SHOW_ERRORS"], "true")
         self.assertEqual(kwargs["env"]["AZURE_CORE_NO_COLOR"], "true")

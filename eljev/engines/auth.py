@@ -31,13 +31,18 @@ AZCLI_NONINTERACTIVE_ENV: dict[str, str] = {
     "AZURE_CORE_DISABLE_CONFIRM_PROMPT": "true",
     "GCM_INTERACTIVE": "never",
 }
+_AZCLI_STRIP_ENV_KEYS = frozenset({"copilot_agent_session_id"})
 _AZCLI_CHILD_EXES = frozenset({"cmd.exe", "python.exe", "python3.exe", "az.exe", "conhost.exe"})
 
 
 def build_azcli_env() -> dict[str, str]:
     """Return an environment dictionary that suppresses interactive Azure CLI prompts."""
 
-    env = dict(os.environ)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key.lower() not in _AZCLI_STRIP_ENV_KEYS
+    }
     env.update(AZCLI_NONINTERACTIVE_ENV)
     return env
 

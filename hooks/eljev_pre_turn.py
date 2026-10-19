@@ -245,7 +245,12 @@ def _spawn_daemon_once() -> None:
     except OSError:
         return
 
-    environment = dict(os.environ)
+    stripped = {"copilot_agent_session_id", "agency_session_id", "agency_operation_id"}
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.lower() not in stripped
+    }
     root = str(REPO_ROOT)
     existing = environment.get("PYTHONPATH", "")
     entries = [entry for entry in existing.split(os.pathsep) if entry]

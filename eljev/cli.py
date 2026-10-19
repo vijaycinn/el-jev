@@ -236,7 +236,12 @@ def _pid_exists(pid: int) -> bool:
 
 
 def _build_daemon_env() -> dict[str, str]:
-    environment = dict(os.environ)
+    stripped = {"copilot_agent_session_id", "agency_session_id", "agency_operation_id"}
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key.lower() not in stripped
+    }
     root = str(config.repo_root())
     existing = environment.get("PYTHONPATH", "")
     entries = [entry for entry in existing.split(os.pathsep) if entry]
